@@ -698,3 +698,57 @@ Recorded rather than silently editing the stages:
    a no-op endpoint that compiles — no catalog access yet.
 3. Re-read §9.3 and §9.4 before writing Stage B: they carry requirements that are cheap to
    satisfy at design time and expensive to retrofit.
+## 10. Session 2 result (Stage A)
+
+Stage A is in the `feldera/` checkout, not here: `845e79d` on branch `ducklake-connector`
+(parent `288cd64`, the pinned baseline of §9.1). The skeleton compiles and is registered; no
+catalog is opened and every data path returns `unimplemented`, so nothing can silently lose
+output.
+
+**What exists now.** `crates/feldera-types/src/transport/ducklake.rs` carries the config
+surface: `DuckLakeCatalogConfig` (metadata location vs. `jdbc:` Postgres, data path),
+`DuckLakeWriterConfig` (output group, guard location, time travel bounds),
+`DuckLakeReaderConfig` (table, schema, catalog, row limit). Registered in
+`TransportConfig` (`crates/feldera-types/src/transport.rs:206-209`) — `#[serde(tag = "transport")]`
+like the community connectors, not `#[serde(flatten)]` as in the enterprise ones — classified in
+`crates/connectors/src/transport.rs:653-662` as an integrated connector, and added to the
+`/pipeline` OpenAPI schema list in `crates/pipeline-manager/src/api/main.rs` (new transports do
+not appear in `openapi.json` unless named there explicitly, then regenerated with
+`pipeline-manager --dump-openapi`).
+
+`crates/connectors/src/integrated/ducklake.rs` carries the programs: `DuckLakeWriter`
+implementing `OutputConsumer` + `Encoder` (the delta-shaped pair — `batch_start`/`encode` see the
+same step) and `OutputEndpoint::is_fault_tolerant() -> false`, and `DuckLakeInputEndpoint`
+implementing `InputEndpoint` + `IntegratedInputEndpoint` with `fault_tolerance() =
+AtLeastOnce` (§9.6: the change-feed range is closed, so the reader can promise at-least-once but
+not exactly-once). The module docstring explains the layout choice and states what Stage B/C owe,
+rather than describing the stubs.
+
+**Gate.** `cargo test -p dbsp_connectors --features with-deltalake,with-ducklake` (370 passed),
+`cargo check -p dbsp_connectors -p rest-api -p pipeline-manager -p dbsp_adapters
+--all-targets` clean, `cargo test -p feldera-types --all-targets` (96 passed, after regenerating
+the `proptest` snapshots that the new `TransportConfig` variant changes), and the adversarially
+stripped `--features with-ducklake` run (error confirms the feature is load-bearing and nothing
+else regressed). A standalone `--no-default-features --features with-ducklake` cannot work
+because `integrated.rs` needs `with-deltalake` in scope — same constraint, same error, as the
+Delta Lake arm.
+
+**Build recipe (macOS arm64, no docker, no `bun`).** Recorded here rather than in a commit body
+because it wastes an afternoon to rediscover:
+
+```bash
+nix shell nixpkgs#rdkafka nixpkgs#pkg-config nixpkgs#openssl nixpkgs#zstd --command bash -c '
+  export PKG_CONFIG_PATH="$(nix build --no-link --print-out-paths nixpkgs#rdkafka)/lib/pkgconfig:$PKG_CONFIG_PATH"
+  export WEBCONSOLE_BUILD_DIR=/tmp/webconsole-stub   # build.rs:49 needs this or `bun`
+  ~/.cargo/bin/cargo check -p dbsp_connectors --features with-deltalake'
+```
+
+`cargo` must be the rustup proxy (`rust-toolchain.toml` pins channel `1.99.0`); `nix shell`
+alone gives `1.96.1` and the build fails on edition/toolchain mismatch. Two deviations from a
+clean diff are deliberate: `cargo fmt` reflows some pre-existing lines in the two files it
+touches (accepted rather than bypassed with `#[rustfmt::skip]`), and the `key_schema` field is
+kept although Stage A does not read it, because the constructor's arguments are the framework's
+and dropping the field means rewriting the constructor in Stage B.
+
+**Open objectives:** Stage B (writer: guard row, one-transaction apply, hold-until-cancelled,
+read-back verification) — not started (m00001 §3).
