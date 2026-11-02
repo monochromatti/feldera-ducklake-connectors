@@ -181,6 +181,10 @@ window in between.
 | `src/fd_connectors/feldera.py` | Minimal Feldera REST client (pipelines, ingress, egress, completion tokens). |
 | `src/fd_connectors/scenarios.py` | The 18 SQL scenario checks behind `validate-local`. |
 | `src/fd_connectors/cli.py` | `fd-connectors` entry point. |
+| `tests/` | Unit tests for step assembly and the egress wire format, plus end-to-end tests against a live stack. |
+| `formal/` | The vendored Lean 4 development the protocol comes from, checksummed in `formal/MANIFEST.json`. Read `formal/REPORT.md` first. |
+| `docs/design.md` | Which theorem justifies which code path, and what the model does *not* cover. |
+| `AGENTS.md` | Working rules for agent-assisted changes. |
 
 ## CLI
 
@@ -198,15 +202,55 @@ fd-connectors output-run --feldera-url URL --pipeline P --generation G \
 ## Development
 
 ```bash
-devenv shell   # python 3.13, uv, duckdb CLI, psql, postgres, lean4
+devenv shell   # python 3.13, uv, duckdb CLI, psql, postgres, lean4, docker-client
 fd-test        # unit tests
 fd-scenarios   # protocol scenarios against throwaway DuckLake catalogs
 feldera-up     # start the Feldera pipeline-manager container on :18080
 fd-e2e         # end-to-end test against the live stack (skips if absent)
 ```
 
+The e2e module **skips silently** when no pipeline-manager answers `$FELDERA_URL`,
+so check that it actually ran rather than passing vacuously. Re-check the proof
+model with Lean 4.19.0 via `cd formal && bash verify.sh`.
+
+## Operating the local stack
+
+Traps that cost real time and look like code failures:
+
+- **A full disk makes every compile fail.** The pipeline-manager accumulates
+  compiled artifacts; when the container's filesystem fills, *every* pipeline
+  fails with `program failed to compile` / `RustError`, including
+  `CREATE TABLE t (x INT);`. Check before debugging code:
+  `docker exec feldera df -h /`, then clear the cache with
+  `docker exec feldera bash -c 'rm -rf /home/ubuntu/.feldera/compiler/*'`.
+  A leaked cache reached 33 GB in one session.
+- **A compile failure against a trivial program is never your SQL.** Reproduce it
+  with a minimal pipeline before suspecting the connectors.
+- **Cleanup is best-effort.** Community edition returns `501 EnterpriseFeature`
+  for a graceful stop (`FelderaClient.delete` force-stops first for this reason),
+  and refuses to delete a pipeline that is not fully stopped (`400
+  DeleteRestrictedToFullyStopped`). Pipelines left in a failed state may be
+  undeletable; they are harmless but they accumulate.
+- **Do not mix JSON body config with query parameters** on the egress endpoints,
+  and note that `send_snapshot: true` requires a *materialized* output view.
+- **Verifying a checkout in isolation:** the editable install is a plain `.pth`,
+  so `PYTHONPATH=<tree>/src` wins — but assert `fd_connectors.__file__` points
+  into that tree, or you will silently test the wrong copy.
+
 ## Provenance
 
-The publication protocol and its failure modes come from a Lean 4 development
-(24 positive theorems, 14 counterexamples, no `sorry`) and nine SQL witnesses.
-`validate-local` is the executable counterpart of those witnesses.
+The publication protocol is not invented here. It comes from a Lean 4 development
+(38 checked declarations: 24 positive theorems and 14 counterexamples, no
+`sorry`, `admit`, new `axiom` or `native_decide`, axiom use limited to `propext`
+and `Quot.sound`) together with nine SQL witnesses, vendored unmodified in
+[`formal/`](formal/) with per-file SHA-256 checksums. `formal/REPORT.md` is the
+authoritative record of what was proved, under which assumptions, and what
+remains unverified; [`docs/design.md`](docs/design.md) maps each theorem to the
+code path that discharges it. `validate-local` is the executable descendant of
+those nine SQL witnesses.
+
+One caveat about this repository's own history: it was **reconstructed** as an
+atomic, linear split of an earlier two-commit history, and some intermediate
+`__init__.py` contents were derived mechanically. Commit order is a reading
+order, not a chronological record — do not infer development sequence from
+`git log` or `git blame`.
