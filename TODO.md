@@ -724,31 +724,45 @@ AtLeastOnce` (§9.6: the change-feed range is closed, so the reader can promise 
 not exactly-once). The module docstring explains the layout choice and states what Stage B/C owe,
 rather than describing the stubs.
 
-**Gate.** `cargo test -p dbsp_connectors --features with-deltalake,with-ducklake` (370 passed),
-`cargo check -p dbsp_connectors -p rest-api -p pipeline-manager -p dbsp_adapters
---all-targets` clean, `cargo test -p feldera-types --all-targets` (96 passed, after regenerating
-the `proptest` snapshots that the new `TransportConfig` variant changes), and the adversarially
-stripped `--features with-ducklake` run (error confirms the feature is load-bearing and nothing
-else regressed). A standalone `--no-default-features --features with-ducklake` cannot work
-because `integrated.rs` needs `with-deltalake` in scope — same constraint, same error, as the
-Delta Lake arm.
+**Gate.** `cargo test -p feldera-types --lib` 264 passed. `cargo check -p dbsp_connectors -p
+rest-api -p pipeline-manager --all-targets` clean. `cargo test -p dbsp_connectors` (default
+features: Kafka, Delta, Iceberg, Avro, Pub/Sub) 738 passed, 53 failed, 3 ignored — and every
+failure is a test that needs a service this machine does not run: 21 NATS tests (want a local
+`nats-server`), `integrated::postgres::output::tests::{test_postgres_bad_field_name,
+test_postgres_field_name, test_postgres_key_field_name, test_postgres_table_name,
+parallel::batch_start_gives_up_while_the_pipeline_is_stopping,
+parallel::test_progress_counter_batch_start_resets}`, `integrated::postgres::test::cdc_tests::
+test_cdc_runtime_shutdown_closes_hosted_connections` (want Postgres on `:5432`), and
+`integrated::dynamodb::test::dynamodb_progress_counter_batch_start_resets` (wants DynamoDB
+local). Re-running with those five suites skipped gives 422 passed / 29 failed — the same
+service-dependent set. None of them exercise this stage's code, so "no new failures" rests on
+the mechanism (one added `match` arm plus a stub module) rather than on a differential run
+against `288cd64`; that baseline costs ~30 minutes and was not spent.
+
+**No `with-ducklake` feature yet.** Nothing in the skeleton has a dependency to gate — the
+switch would gate only the presence of a stub — so it arrives with the FFI in Stage B. The
+commit body records that choice.
 
 **Build recipe (macOS arm64, no docker, no `bun`).** Recorded here rather than in a commit body
-because it wastes an afternoon to rediscover:
+because it wastes an afternoon to rediscover. The workspace enables `rdkafka`'s
+`dynamic-linking`, so librdkafka has to be discoverable by `pkg-config` — and `rdkafka.pc` lives
+in rdkafka's **`dev`** output, not the default one. Pointing at the default output fails with
+`librdkafka 2.12.1 cannot be found on the system: Aborted because RDKAFKA_NO_PKG_CONFIG is set`
+(or plain `Dynamic linking failed. Exiting.`):
 
 ```bash
-nix shell nixpkgs#rdkafka nixpkgs#pkg-config nixpkgs#openssl nixpkgs#zstd --command bash -c '
-  export PKG_CONFIG_PATH="$(nix build --no-link --print-out-paths nixpkgs#rdkafka)/lib/pkgconfig:$PKG_CONFIG_PATH"
+RDKAFKA_DEV=$(nix build --no-link --print-out-paths nixpkgs#rdkafka.dev)
+nix shell nixpkgs#rdkafka nixpkgs#pkg-config nixpkgs#openssl nixpkgs#zstd --command bash -c "
+  export PKG_CONFIG_PATH=$RDKAFKA_DEV/lib/pkgconfig:\$PKG_CONFIG_PATH
   export WEBCONSOLE_BUILD_DIR=/tmp/webconsole-stub   # build.rs:49 needs this or `bun`
-  ~/.cargo/bin/cargo check -p dbsp_connectors --features with-deltalake'
+  ~/.cargo/bin/cargo test -p dbsp_connectors"
 ```
 
-`cargo` must be the rustup proxy (`rust-toolchain.toml` pins channel `1.99.0`); `nix shell`
-alone gives `1.96.1` and the build fails on edition/toolchain mismatch. Two deviations from a
-clean diff are deliberate: `cargo fmt` reflows some pre-existing lines in the two files it
-touches (accepted rather than bypassed with `#[rustfmt::skip]`), and the `key_schema` field is
-kept although Stage A does not read it, because the constructor's arguments are the framework's
-and dropping the field means rewriting the constructor in Stage B.
+`cargo` must be the rustup proxy (`rust-toolchain.toml` pins channel `1.99.0`); a `nix shell`
+cargo is `1.96.1` and fails on toolchain mismatch. `cargo fmt` reflows some pre-existing lines
+in the two files it touches; accepted rather than bypassed with `#[rustfmt::skip]`. The
+`key_schema` field is kept although Stage A does not read it, because the constructor's
+arguments are the framework's and dropping the field means rewriting the constructor in Stage B.
 
 **Open objectives:** Stage B (writer: guard row, one-transaction apply, hold-until-cancelled,
 read-back verification) — not started (m00001 §3).
