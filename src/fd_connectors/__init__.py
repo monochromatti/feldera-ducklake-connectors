@@ -1,6 +1,6 @@
 """Feldera <-> DuckLake connectors.
 
-Two layers, usable independently:
+Three layers, usable independently:
 
 ``protocol``
     Pure-Python publication protocol (batch identity, guard row, decision
@@ -8,9 +8,12 @@ Two layers, usable independently:
 ``catalog``
     DuckLake access: snapshots, change feed, and the guarded publication
     transaction.
+``feldera``
+    REST client for the Feldera pipeline-manager.
 """
 
 from .catalog import DuckLake, GuardInvariantError, HistoryExpiredError, PublicationResult
+from .feldera import FelderaClient, FelderaError, OutputChunk
 from .protocol import (
     Batch,
     Decision,
@@ -29,10 +32,13 @@ __all__ = [
     "Decision",
     "Delta",
     "DuckLake",
+    "FelderaClient",
+    "FelderaError",
     "Guard",
     "GuardInvariantError",
     "HistoryExpiredError",
     "Op",
+    "OutputChunk",
     "ProtocolError",
     "PublicationResult",
     "acquire_ownership",
