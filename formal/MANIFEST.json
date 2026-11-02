@@ -1,0 +1,50 @@
+{
+  "review_date": "2026-10-31",
+  "lean": {
+    "version": "4.19.0",
+    "commit": "6caaee842e94",
+    "archive_sha256": "6fe3ce97a58f44e2b3567d455b994eacec5bfe9ae7774f2a573444480ba813fe",
+    "kernel_theorems": 38,
+    "positive_theorems": 24,
+    "counterexample_theorems": 14,
+    "sorry_admit_new_axioms_native_decide": false,
+    "allowed_axioms": [
+      "propext",
+      "Quot.sound"
+    ],
+    "original_lean3_project_rechecked": false
+  },
+  "sql": {
+    "duckdb": "2.0.0",
+    "ducklake_extension": "417a9117f5",
+    "ducklake_commit": "417a9117f590e8141742ac0579d02f6a90162e37",
+    "extension_sha256": "4b497cf95d768004d34a97e7098d33f687e994dc523945948c321af25061b39b",
+    "scenarios": 9,
+    "catalog": "local DuckDB",
+    "instances": 1,
+    "postgresql_tested": false,
+    "feldera_executed": false,
+    "real_crash_tested": false
+  },
+  "sources": {
+    "feldera_reviewed_commit": "c7918355c6a8a2eea4062e92d8cc0ea63a2a752f",
+    "dbsp_original_commit": "fb6ff4416108710448ccd87473c5513c1a1179ea",
+    "original_lean_version": "3.51.1",
+    "original_mathlib_commit": "44b58b42794e5abe2bf86397c38e26b587e07e59"
+  },
+  "file_sha256": {
+    "REPORT.md": "e54d9c105d3517991ceb12c59dca935c74213efd227a809338591658129ab9ad",
+    "README.md": "b69e282cced49f13200ae9a105ff10e97cba797cec6d68c7d0aaf34ca0c5fb58",
+    "Connectors.lean": "4f32819da96da701aa0b2131bc915f599f4c9c62f86e5a1a05470efff7445b19",
+    "Audit.lean": "e651e9475a762ee61d039dcf4e47ac2a11cabf6b3a4b9cb315821063c4810836",
+    "lean-toolchain": "55e97be96000b5e9e290c9e74482e5e317861499a5540353ce845471bded8cea",
+    "verify.sh": "d8e094bd6a6edf2bd30632394902f99fccb0d90dc4f3b7e16d33ad8fa2ff470d",
+    "requirements.txt": "2a63ef8b6eeaa424c32f8d7206202e7a939b11c43213e3c58eecf8b73c920644",
+    "sql_checks.py": "d6a19c99e8af9bd011088e8283d60129507200b3b01c03c3f0de5d4569e8ce8c",
+    "sql-results.json": "eb066807e8679efabf6d129a52ce4238f0e1a7640c6d07a728d01a2ff0f667ee",
+    "lean-verification.log": "3876735c48d3738738a0dc9299261ec1ff0e23a442a0d48108f3b0f53fe77f18",
+    "lean-axiom-audit.log": "b6c211bbfbc41564bd7846235879d3c5b07dcbfa97e5f0a12e4e23d18f738eff",
+    "verification-run.log": "7aa6df82de865d14c2190007a505af9d3adbcd3ea2f0f94248a0b2ef6650ffea",
+    "runtime_compat.cpp": "6599fd9c7683427f62f15b2b6ef2f3c81734f9d2de4682492f5f3a43b1df98fd"
+  }
+}

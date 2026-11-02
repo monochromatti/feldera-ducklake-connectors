@@ -1,0 +1,48 @@
+Lean (version 4.19.0, x86_64-unknown-linux-gnu, commit 6caaee842e94, Release)
+'DuckLakeProof.source_prefix_exact' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.publish_preserves_correctness' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.publish_idempotent' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.all_traces_preserve_safety' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.end_to_end_snapshot_correct' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.end_to_end_stream_operator_correct' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.supported_codec_is_injective' does not depend on any axioms
+'DuckLakeProof.coherent_checkpoint_and_exact_journal_recover' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.Counterexamples.no_universal_recovery_from_endpoints' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.apply_delta' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.source_prefix_exact' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.bootstrap_then_follow' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.source_engine_composition' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.source_operator_composition' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.supported_codec_is_injective' does not depend on any axioms
+'DuckLakeProof.coherent_checkpoint_and_exact_journal_recover' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.publish_preserves_correctness' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.duplicate_is_noop' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.wrong_generation_is_noop' depends on axioms: [propext]
+'DuckLakeProof.stale_epoch_is_noop' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.base_mismatch_is_noop' depends on axioms: [propext]
+'DuckLakeProof.eligible_batch_advances' depends on axioms: [propext]
+'DuckLakeProof.frontier_monotone' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.publish_idempotent' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.takeover_preserves_correctness' does not depend on any axioms
+'DuckLakeProof.takeover_fences_previous_owner' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.stage_is_invisible' does not depend on any axioms
+'DuckLakeProof.crash_keeps_committed_state' does not depend on any axioms
+'DuckLakeProof.retry_after_lost_ack_is_idempotent' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.transition_preserves_safety' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.all_traces_preserve_safety' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.end_to_end_snapshot_correct' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.end_to_end_stream_operator_correct' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.Counterexamples.non_atomic_data_then_marker_duplicates' does not depend on any axioms
+'DuckLakeProof.Counterexamples.non_atomic_marker_then_data_loses' does not depend on any axioms
+'DuckLakeProof.Counterexamples.concurrent_append_receipts_are_not_deduplication' does not depend on any axioms
+'DuckLakeProof.Counterexamples.delete_all_matching_rows_breaks_bags' does not depend on any axioms
+'DuckLakeProof.Counterexamples.duplicate_inclusive_bootstrap_boundary' does not depend on any axioms
+'DuckLakeProof.Counterexamples.mixed_table_versions_are_not_a_snapshot' does not depend on any axioms
+'DuckLakeProof.Counterexamples.mixed_table_versions_change_query' does not depend on any axioms
+'DuckLakeProof.Counterexamples.expired_history_is_information_loss' does not depend on any axioms
+'DuckLakeProof.Counterexamples.no_universal_recovery_from_endpoints' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.Counterexamples.unordered_chunk_replay_changes_step' does not depend on any axioms
+'DuckLakeProof.Counterexamples.narrow_encoding_collides' does not depend on any axioms
+'DuckLakeProof.Counterexamples.finite_hash_equality_is_not_payload_equality' does not depend on any axioms
+'DuckLakeProof.Counterexamples.offset_without_matching_state_loses_input' does not depend on any axioms
+'DuckLakeProof.Counterexamples.output_only_failure_is_not_source_snapshot_atomicity' does not depend on any axioms

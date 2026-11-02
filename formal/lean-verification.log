@@ -1,0 +1,9 @@
+'DuckLakeProof.source_prefix_exact' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.publish_preserves_correctness' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.publish_idempotent' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.all_traces_preserve_safety' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.end_to_end_snapshot_correct' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.end_to_end_stream_operator_correct' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.supported_codec_is_injective' does not depend on any axioms
+'DuckLakeProof.coherent_checkpoint_and_exact_journal_recover' depends on axioms: [propext, Quot.sound]
+'DuckLakeProof.Counterexamples.no_universal_recovery_from_endpoints' depends on axioms: [propext, Quot.sound]

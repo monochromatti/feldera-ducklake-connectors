@@ -1,0 +1,74 @@
+{
+  "duckdb": "2.0.0",
+  "tests": [
+    {
+      "name": "backfill_plus_follow_and_per_snapshot_signed_bag_deltas",
+      "passed": true,
+      "windows": 5
+    },
+    {
+      "name": "flush_and_rewrite_preserve_normalized_historic_deltas",
+      "passed": true,
+      "raw_windows_that_changed": []
+    },
+    {
+      "name": "staging_is_invisible_and_explicit_rollback_discards_guard_and_outputs",
+      "passed": true
+    },
+    {
+      "name": "lost_ack_retry_is_deduplicated_with_atomic_publication",
+      "passed": true
+    },
+    {
+      "name": "concurrent_publishers_conflict_on_shared_guard",
+      "passed": true,
+      "error": "TransactionContext Error: Failed to commit: Failed to commit DuckLake transaction.\nTransaction conflict - attempting to insert into table with index \"2\" - but another transaction has deleted inlined data from it"
+    },
+    {
+      "name": "ownership_change_fences_old_publisher",
+      "passed": true,
+      "error": "TransactionContext Error: Failed to commit: Failed to commit DuckLake transaction.\nTransaction conflict - attempting to insert into table with index \"2\" - but another transaction has deleted inlined data from it"
+    },
+    {
+      "name": "sequence_gaps_and_wrong_generation_are_rejected",
+      "passed": true
+    },
+    {
+      "name": "nonconsecutive_ids_accept_an_explicit_matching_base",
+      "passed": true
+    },
+    {
+      "name": "counterexample_concurrent_append_only_receipts_allow_duplicates",
+      "passed": true
+    }
+  ],
+  "extensions": [
+    [
+      "core_functions",
+      "v2.0.0"
+    ],
+    [
+      "ducklake",
+      "417a9117f5"
+    ],
+    [
+      "icu",
+      "v2.0.0"
+    ],
+    [
+      "json",
+      "v2.0.0"
+    ],
+    [
+      "parquet",
+      "v2.0.0"
+    ]
+  ],
+  "limitations": [
+    "One DuckDB instance with multiple connections and local DuckDB catalog.",
+    "No Feldera pipeline, Rust connector, SQL/Arrow codec, or original DBSP proof executed.",
+    "Explicit ROLLBACK and ignored COMMIT acknowledgement are not process/power-loss tests.",
+    "PostgreSQL/SQLite catalogs, network partitions, and cleanup races remain untested.",
+    "SQL behavior is empirical evidence, not a Lean refinement proof."
+  ]
+}
