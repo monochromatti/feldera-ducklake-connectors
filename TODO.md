@@ -15,6 +15,53 @@ Read, in this order, before writing any Rust:
 
 ---
 
+## How to start
+
+**Repo identity.** This repository is `monochromatti/feldera-ducklake-connectors`
+(https://github.com/monochromatti/feldera-ducklake-connectors), normally checked out at
+`~/Code/feldera-ducklake-connectors`. It is the **specification of record**, not the port
+target. Nothing here is rewritten into Rust in place.
+
+**Two checkouts, side by side:**
+
+```
+~/Code/feldera/                      # the Feldera workspace — the port target
+~/Code/feldera-ducklake-connectors/  # this repo — the spec, read-only in practice
+```
+
+```bash
+cd ~/Code && git clone https://github.com/feldera/feldera
+cd feldera && git switch -c ducklake-connector
+cargo build -p pipeline-manager          # baseline build BEFORE any edits
+```
+
+**Pin what you built against.** Record the upstream commit SHA and the pipeline-manager
+version under §8. The wire format in `tests/test_wire_format.py` was captured against
+pipeline-manager **0.374.0**; if upstream `main` has since moved the egress protocol, that
+capture — not the new engine — is the contract. Resolve any divergence explicitly and in
+writing rather than regenerating the capture, which would silently discard the ground
+truth the encoder is built on.
+
+**This is a multi-session project.** The closest analogue (`delta_table`) is ~900 KB of
+Rust. Do **not** attempt the five stages of §3 in one sitting; you will either thrash or
+fake a completion. Stop at each boundary with a written result:
+
+1. **Session 1 — the §2 spike verdicts, then stop.** S1 is a go/no-go: if `libduckdb`
+   cannot be linked into the connector, report that and build nothing.
+2. **Session 2 — Stage A**, plus a no-op endpoint that compiles, so the enum variant,
+   feature flag and config plumbing are proven end to end before real logic lands.
+3. **Session 3+ — Stage B**, then C, D, E.
+
+**Check your permissions before promising anything:** network access to crates.io and to
+fetch the DuckLake extension binary, and `docker` for the local stack. `gh auth status`
+is needed for option (B) only. If any is unavailable, say so in the session-1 result
+instead of working around it silently.
+
+**Commit conventions differ by repo.** In *this* repo: Conventional Commits, atomic,
+linear (`git log` is a reading order). In the *fork*: follow upstream `CONTRIBUTING.md`.
+
+---
+
 ## 0. BLOCKING FINDING: there is no connector plugin mechanism
 
 **Do not start by creating a standalone connector crate. It cannot work.** Feldera does
@@ -44,6 +91,11 @@ separate project. Two delivery options, identical in implementation, different i
 
 Either way the code lives in `crates/connectors/src/integrated/ducklake/` plus the enum
 variant. **Record which option was chosen at the top of this file when you start.**
+
+If you pursue option (B), read `CONTRIBUTING.md` **and `AI_POLICY.md`** in the Feldera
+repository before writing code. That policy file exists and was not read in preparing this
+brief — do not assume it is permissive of agent-authored contributions, and do not treat
+this TODO as authorization to open an upstream PR.
 
 **Closest analogue to copy:** the Delta Lake integrated connector,
 `crates/connectors/src/integrated/delta_table/` — `output.rs` 228 KB, `input.rs` 325 KB,
@@ -217,6 +269,29 @@ egress wire format** — it is the ground truth for the `Encoder`. Do not re-der
 
 ## 5. Definition of done
 
+### How validation works for a native connector (read this first)
+
+**The existing Python harness cannot validate the Rust connector.** `scenarios.py` drives
+`src/fd_connectors/` directly, whereas a native connector is exercised through a pipeline
+that declares `WITH ('connectors' = '[{"transport": {"name": "ducklake", ...}}]')`.
+So "port the 18 scenarios" does **not** mean running `fd-scenarios` against Rust.
+
+Three layers, increasing in cost:
+
+1. **Engine-free unit tests** — `decide`, `payload_digest`, `advance`, codec round trips.
+   These are pure, so test them exhaustively. Cheapest safety net; do this first.
+2. **Catalog-level tests through libduckdb** — the guard-row CAS, the `start + 1` interval
+   rule, resync, rollback. These are *catalog* semantics, not transport semantics, and can
+   be tested without a circuit. Build the catalog exactly as `scenarios.py:80` does:
+   `ATTACH 'ducklake:<tmpdir>/meta.ducklake'` (file-backed metadata; no Postgres needed).
+3. **`#[engine_test]` connector suites** — end to end through a real pipeline.
+
+The Python implementation stays a usable **oracle** for layers 1 and 2: its expectations
+were validated against a live stack, so a Rust test disagreeing with a Python scenario is
+a signal to investigate, never a reason to edit the Python scenario.
+
+### The gates
+
 - All 18 Python scenarios have Rust counterparts (`scenarios.py`), grouped as:
   `guard/{apply-advances-frontier, duplicate-retry-is-a-no-op, stale-publisher-is-refused,
   foreign-generation-is-refused, ownership-requires-explicit-takeover,
@@ -243,7 +318,10 @@ egress wire format** — it is the ground truth for the `Encoder`. Do not re-der
 ## 6. Environment
 
 - This repo: `devenv shell` (python 3.13, duckdb CLI, psql, postgres, lean4, docker-client).
-  `fd-scenarios` / `validate-local` remain the fastest way to check protocol intent.
+  `fd-scenarios` / `validate-local` remain the fastest way to check protocol intent —
+  against the *Python* implementation. They are the spec's test suite, not the port's.
+- The fork: `cargo build -p pipeline-manager` to build; `cargo test -p static-connectors
+  --test connector_suites` for connector suites; engine-free suites run without a circuit.
 - The Feldera fork: `rust-toolchain.toml` pins the toolchain. Connector-suite tests need
   **CMake**, plus **redpanda** and a **NATS server** binary (the existing suites declare
   which services they need via `services(...)` — declare only what DuckLake needs).
@@ -269,10 +347,16 @@ egress wire format** — it is the ground truth for the `Encoder`. Do not re-der
 
 ## 8. Open decisions
 
-- [ ] **Delivery:** fork (A) vs upstream PR (B). §0. Default assumption: fork.
-- [ ] **S1 verdict:** is a DuckDB FFI dependency acceptable inside the engine? This is the
-      go/no-go.
-- [ ] **S2 verdict:** is single-writer exclusivity acceptable for the target deployment?
-- [ ] Does the guard-row SQL belong in the connector, or should it become a documented
-      DuckLake-side requirement? (It is currently connector-owned; the Python version
-      provisions the guard table itself.)
+Resolve each of these before starting the stage they gate. Defaults are given so that a
+fresh agent is not blocked waiting for a human; changing a default is the human's call.
+
+- [ ] **Delivery:** fork (A) vs upstream PR (B). §0. **Default: fork (A).**
+- [ ] **Upstream SHA + pipeline-manager version** the fork is based on. **Default: upstream
+      `main` at clone time — record the SHA, do not leave it implicit.**
+- [ ] **S1 verdict:** is a DuckDB FFI dependency acceptable inside the engine? **Go/no-go;
+      no default — a negative verdict ends the project as scoped.**
+- [ ] **S2 verdict:** is single-writer DuckDB exclusivity acceptable for the target
+      deployment? **Default: assume one pipeline per catalog, i.e. yes.**
+- [ ] **Guard-table ownership:** does the connector provision `guard_table` itself (as the
+      Python version does, via `catalog.provision_guard`), or is it a documented DuckLake-side
+      requirement? **Default: the connector provisions it**, matching the validated behaviour.
