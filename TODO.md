@@ -358,8 +358,10 @@ fresh agent is not blocked waiting for a human; changing a default is the human'
       `288cd64a192ed0da491eca97a02937e746e2d720`, 2026-10-31, workspace version `0.376.0`
       (no `v0.376.0` tag exists upstream; pin the SHA).**
 - [x] **S1 verdict:** is a DuckDB FFI dependency acceptable inside the engine? **Go/no-go;
-      no default — a negative verdict ends the project as scoped.** — **GO, via direct C-API
-      FFI; there is no usable off-the-shelf crate (§9.2).**
+      no default — a negative verdict ends the project as scoped.** — **GO, with the stock
+      `duckdb` crate: version `1.20000.1` already targets DuckDB `v2.0.0` (the second version
+      component encodes it) and its default `download-lib` feature fetches the prebuilt
+      library. §9.2.**
 - [x] **S2 verdict:** is single-writer DuckDB exclusivity acceptable for the target
       deployment? **Default: assume one pipeline per catalog, i.e. yes.** — **YES. Two
       regimes, both compatible with the protocol; file catalogs enforce it mechanically,
@@ -383,8 +385,9 @@ session, not quoted from the brief.
 Harness: `~/Code/ducklake-ffi-spike` — a ~300-line Rust binary that hand-declares the
 subset of the DuckDB C API it needs (`extern "C"`, `duckdb_open_ext`, `duckdb_query`, …)
 and links `libduckdb` directly. It exists to answer S1/S2 without any connector scaffolding
-and is throwaway; it is not the connector, and its FFI declarations are not the ones the
-connector should ship (see §9.2, "no usable crate").
+and is throwaway; it is not the connector, and its hand-written FFI declarations exist only
+because the harness started before the crate was checked — the connector should use the
+`duckdb` crate instead (§9.2).
 
 ### 9.1 Environment, baseline build, S0
 
@@ -413,30 +416,59 @@ connector should ship (see §9.2, "no usable crate").
   `crates/*/Cargo.toml` or `crates/**/*.rs` in the workspace. DuckDB really is a new
   dependency.
 
-### 9.2 S1 — GO, but not with the `duckdb` crate
+### 9.2 S1 — GO, with the stock `duckdb` crate
 
-**The blocking sub-finding: the crates.io `duckdb`/`libduckdb-sys` pair cannot be used.**
-Both max out at `1.20000.1` (DuckDB **1.2.0**), while the DuckLake extension is only
-published for DuckDB **≥ 1.3.0** — probed directly:
+**Correction (same session, second measurement).** An earlier version of this section
+claimed the crates.io crate stops at DuckDB 1.2.0 and that the connector must hand-write its
+bindings. **That was wrong**, and the error is worth recording because the version scheme is
+what invites it: `1.20000.1` is not "DuckDB 1.2" — the second component encodes the DuckDB
+version as an integer (`20000` → `2.0.0`), documented in
+`crates/libduckdb-sys/src/build_version.rs`: `let duckdb_major = encoded / 10_000;` etc.
+The `1.` prefix is a crate epoch, not DuckDB's major.
+
+So there is no binding problem at all. Verified end to end in a throwaway crate:
+
+```toml
+[dependencies]
+duckdb = "1.20000.1"     # default features: download-lib
+```
 
 ```
-http://extensions.duckdb.org/v1.2.0/osx_arm64/ducklake.duckdb_extension.gz -> 404
-http://extensions.duckdb.org/v1.3.0/osx_arm64/ducklake.duckdb_extension.gz -> 200
-http://extensions.duckdb.org/v1.4.0/osx_arm64/ducklake.duckdb_extension.gz -> 200
-http://extensions.duckdb.org/v2.0.0/osx_arm64/ducklake.duckdb_extension.gz -> 200
+cargo run   (22 s cold, no env vars, no CMake, no vendored dylib)
+  library: v2.0.0
+  library_version: v2.0.0
+  LOAD ducklake: ok
+  extension: ducklake 417a9117f5 true
 ```
 
-So the choice is a hand-declared C-API subset (what the spike did) or a patched
-`libduckdb-sys`; either way the connector owns its bindings and pins the library version.
-That is a **supply-chain** finding as much as a technical one: an upstream PR (option B)
-would be asked to add FFI *and* a pinned prebuilt C++ library.
+- `libduckdb-sys`'s **default** feature set is `["capi-v1", "vcpkg", "pkg-config",
+  "download-lib"]`, so the prebuilt library is fetched automatically, and the pin is
+  explicit: `crates/libduckdb-sys/.duckdb-release` → `DUCKDB_RELEASE_VERSION=v2.0.0`,
+  `DUCKDB_RELEASE_URL=https://install.duckdb.org/v2.0.0`,
+  `DUCKDB_RELEASE_COMMIT=d54cbbe3df17e8e5ce68312f483b4155836112aa`. That file is the single
+  source of truth for which DuckDB the crates target.
+- **`duckdb-neo` `0.20000.1`** is the same project's wrapper for DuckDB's **v2 C API**
+  ("experimental", `Environment`/`StorageLocation` handles instead of `duckdb_open_ext`) —
+  also published, also pinned to v2.0.0. Worth evaluating for Stage A, but it is explicitly
+  unstable, so the conservative choice is the `capi-v1` surface the `duckdb` crate exposes.
+- **Linked-against-a-local-library mode has one rough edge:** with `DUCKDB_LIB_DIR` set by
+  hand, `libduckdb-sys` emits no `LC_RPATH`, so the binary needs `DYLD_LIBRARY_PATH` (macOS)
+  or `LD_LIBRARY_PATH` (Linux) at run time. The default `download-lib` path does not have
+  this problem. Do not vendor the dylib by hand unless something forces it.
+
+What survives from the original finding, because it is about the *extension*, not the
+crate: DuckLake extension binaries are **per-platform and version-locked to libduckdb**. The
+`LOAD` above worked by autoloading from the extension repository; a deployment that must not
+reach the network still vendors one file per target and checksums it (see below). An
+upstream PR (option B) would still be asked to admit a prebuilt C++ library into the engine
+process — the supply-chain objection is unchanged, only its size.
 
 Everything else about S1 is a clean yes, verified in a Rust process linked against
 `libduckdb` **v2.0.0**:
 
-- **Linking works with no CMake step at all.** DuckDB publishes prebuilt artifacts, so the
-  feared "CMake clash with Feldera's build" does not arise — there is nothing to compile
-  from C++ source:
+- **Linking works with no CMake step at all**, which is what the crate's `download-lib`
+  feature automates. DuckDB publishes prebuilt artifacts, so the feared "CMake clash with
+  Feldera's build" does not arise — there is nothing to compile from C++ source:
   `duckdb-shared-libs-{linux,osx}-{amd64,arm64}.tar.gz` and
   `duckdb-static-libs-{linux,osx}-{amd64,arm64}.tar.gz` (`duckdb-static-libs-osx-arm64`
   present in the v2.0.0 release; `libduckdb-osx-arm64.zip`, the name used by older
@@ -467,9 +499,9 @@ Everything else about S1 is a clean yes, verified in a Rust process linked again
   the `OutputEndpoint`/`InputReader` shapes, whose methods are already allowed to block on
   a dedicated thread (see §9.4 — with the cancellation rule attached).
 
-**Verdict: GO.** The engine can host `libduckdb` + DuckLake in-process. The cost is a
-vendored binary, a pinned version and hand-written bindings — not a redesign of the
-protocol.
+**Verdict: GO.** The engine can host `libduckdb` + DuckLake in-process, and the bindings
+come from crates.io rather than from us. The cost is a vendored *extension* file per
+target plus a pinned crate version — not a redesign of the protocol.
 
 ### 9.3 S2 — YES, and the two catalog backends fail differently
 
@@ -641,8 +673,9 @@ not regenerate `tests/test_wire_format.py`.**
 
 Recorded rather than silently editing the stages:
 
-- **§3 Stage A** must include the vendored-library decision (one prebuilt `libduckdb` per
-  target, checksummed) and cannot start from the `duckdb` crate.
+- **§3 Stage A** must pin the crate (`duckdb = "1.20000.1"`, `download-lib` by default)
+  rather than invent bindings, and decide whether the extension is autoloaded or vendored
+  (§9.2).
 - **§3 Stage B** gains the "hold until cancelled on failure" requirement from §9.4.3, the
   retry/read-back rules from §9.3 as explicit tests, and a config check that refuses
   `enable_output_buffer: true` (§9.4.4).
