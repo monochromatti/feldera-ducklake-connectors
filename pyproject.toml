@@ -1,0 +1,36 @@
+[project]
+name = "fd-connectors"
+version = "0.1.0"
+description = "Feldera <-> DuckLake input and output connectors with an idempotent publication protocol"
+requires-python = ">=3.11"
+dependencies = [
+  "duckdb>=1.4.0",
+  "httpx>=0.27",
+  # duckdb refuses to convert TIMESTAMPTZ to Python without pytz, and DuckLake's
+  # snapshot functions return one, so this is a runtime dependency, not a test extra.
+  "pytz>=2024.1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.2", "ruff>=0.7"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
