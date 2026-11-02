@@ -1,9 +1,16 @@
-"""Pure-Python publication protocol for Feldera <-> DuckLake connectors.
+"""Feldera <-> DuckLake connectors.
+
+Two layers, usable independently:
 
 ``protocol``
-    Batch identity, the guard row, and the decision function.  No I/O.
+    Pure-Python publication protocol (batch identity, guard row, decision
+    function) with no I/O.
+``catalog``
+    DuckLake access: snapshots, change feed, and the guarded publication
+    transaction.
 """
 
+from .catalog import DuckLake, GuardInvariantError, HistoryExpiredError, PublicationResult
 from .protocol import (
     Batch,
     Decision,
@@ -21,9 +28,13 @@ __all__ = [
     "Batch",
     "Decision",
     "Delta",
+    "DuckLake",
     "Guard",
+    "GuardInvariantError",
+    "HistoryExpiredError",
     "Op",
     "ProtocolError",
+    "PublicationResult",
     "acquire_ownership",
     "advance",
     "decide",
