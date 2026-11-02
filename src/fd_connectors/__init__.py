@@ -1,7 +1,5 @@
 """Feldera <-> DuckLake connectors.
 
-Three layers, usable independently:
-
 ``protocol``
     Pure-Python publication protocol (batch identity, guard row, decision
     function) with no I/O.
@@ -10,10 +8,14 @@ Three layers, usable independently:
     transaction.
 ``feldera``
     REST client for the Feldera pipeline-manager.
+``input_connector``
+    The DuckLake -> Feldera connector, plus :mod:`fd_connectors.journal`.
 """
 
 from .catalog import DuckLake, GuardInvariantError, HistoryExpiredError, PublicationResult
 from .feldera import FelderaClient, FelderaError, OutputChunk
+from .input_connector import InputConnector, InputSpec
+from .journal import Checkpoint, Journal, JournalError
 from .protocol import (
     Batch,
     Decision,
@@ -29,6 +31,7 @@ from .protocol import (
 
 __all__ = [
     "Batch",
+    "Checkpoint",
     "Decision",
     "Delta",
     "DuckLake",
@@ -37,6 +40,10 @@ __all__ = [
     "Guard",
     "GuardInvariantError",
     "HistoryExpiredError",
+    "InputConnector",
+    "InputSpec",
+    "Journal",
+    "JournalError",
     "Op",
     "OutputChunk",
     "ProtocolError",
