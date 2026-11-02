@@ -350,13 +350,318 @@ a signal to investigate, never a reason to edit the Python scenario.
 Resolve each of these before starting the stage they gate. Defaults are given so that a
 fresh agent is not blocked waiting for a human; changing a default is the human's call.
 
-- [ ] **Delivery:** fork (A) vs upstream PR (B). §0. **Default: fork (A).**
-- [ ] **Upstream SHA + pipeline-manager version** the fork is based on. **Default: upstream
-      `main` at clone time — record the SHA, do not leave it implicit.**
-- [ ] **S1 verdict:** is a DuckDB FFI dependency acceptable inside the engine? **Go/no-go;
-      no default — a negative verdict ends the project as scoped.**
-- [ ] **S2 verdict:** is single-writer DuckDB exclusivity acceptable for the target
-      deployment? **Default: assume one pipeline per catalog, i.e. yes.**
+- [x] **Delivery:** fork (A) vs upstream PR (B). §0. **Default: fork (A).** — **Resolved:
+      fork (A)** (§9.1). Option (B) stays open on paper; `AI_POLICY.md` exists at the pinned
+      SHA (HTTP 200) and was not read, so it is not a decision this session can make.
+- [x] **Upstream SHA + pipeline-manager version** the fork is based on. **Default: upstream
+      `main` at clone time — record the SHA, do not leave it implicit.** — **Resolved:
+      `288cd64a192ed0da491eca97a02937e746e2d720`, 2026-10-31, workspace version `0.376.0`
+      (no `v0.376.0` tag exists upstream; pin the SHA).**
+- [x] **S1 verdict:** is a DuckDB FFI dependency acceptable inside the engine? **Go/no-go;
+      no default — a negative verdict ends the project as scoped.** — **GO, via direct C-API
+      FFI; there is no usable off-the-shelf crate (§9.2).**
+- [x] **S2 verdict:** is single-writer DuckDB exclusivity acceptable for the target
+      deployment? **Default: assume one pipeline per catalog, i.e. yes.** — **YES. Two
+      regimes, both compatible with the protocol; file catalogs enforce it mechanically,
+      PostgreSQL catalogs enforce it at commit (§9.3).**
 - [ ] **Guard-table ownership:** does the connector provision `guard_table` itself (as the
       Python version does, via `catalog.provision_guard`), or is it a documented DuckLake-side
       requirement? **Default: the connector provisions it**, matching the validated behaviour.
+      **Still open.** §9.3 only established that a *publisher* can lose a concurrent write; whether
+      two processes can race the initial `CREATE` of the guard row was **not** tested (the
+      file-backed catalog cannot even be attached twice, so only a PostgreSQL catalog could
+      exercise it). Keep the default and add a provisioning-race test in Stage B.
+
+---
+
+## 9. Session 1 result (S0/S1/S2/S3)
+
+Date: 2026-11-02. **No connector code was written**, per the session rule. Everything below
+is empirical: each number, checksum and error string was produced by a program in this
+session, not quoted from the brief.
+
+Harness: `~/Code/ducklake-ffi-spike` — a ~300-line Rust binary that hand-declares the
+subset of the DuckDB C API it needs (`extern "C"`, `duckdb_open_ext`, `duckdb_query`, …)
+and links `libduckdb` directly. It exists to answer S1/S2 without any connector scaffolding
+and is throwaway; it is not the connector, and its FFI declarations are not the ones the
+connector should ship (see §9.2, "no usable crate").
+
+### 9.1 Environment, baseline build, S0
+
+- **Baseline `cargo build -p pipeline-manager` is green** on macOS arm64 (artifact
+  `~/Code/feldera_spike_clone/target/debug/pipeline-manager`, 162 MB) — but only with two
+  workarounds, both needed in a fresh checkout:
+  1. `WEBCONSOLE_BUILD_DIR=/tmp/webconsole-stub` — `crates/pipeline-manager/build.rs:49`
+     otherwise runs the web-console build, which needs `bun` (absent) and fails. The env var
+     is checked at :47 and prints `cargo:warning=WEBCONSOLE_BUILD_DIR is set, skipping
+     web-console build`.
+  2. The `rdkafka`/`openssl`/`zstd` native deps come from `nix shell nixpkgs#rdkafka
+     nixpkgs#pkg-config nixpkgs#openssl nixpkgs#zstd`, not from Homebrew. There is no `bun`
+     and no `pkg-config` on the default `PATH`.
+  Record both; a session that skips them concludes the workspace does not build.
+- **Checkout location:** the clone is at `~/Code/feldera_spike_clone`, **not** at the
+  documented `~/Code/feldera` (that path does not exist on this machine). Stage A must
+  create the fork at the documented path from SHA `288cd64a` and branch
+  `ducklake-connector`; until then §How-to-start's paths are aspirational.
+- `git describe`: `main` is 13 commits past `v0.374.0`; workspace version is `0.376.0`, for
+  which **no tag exists** upstream. `target/` is 15 GB and the volume has 56 GiB free —
+  tight enough that a second full build may not fit.
+- Permissions (checked, per §How-to-start): `docker` **ok**, `gh auth status` **ok**
+  (account `monochromatti`), network to crates.io, github.com and extensions.duckdb.org
+  **ok**, `postgres` reachable. No permission gap to report.
+- **S0 confirmed by grep, not assumption:** no `duckdb` string anywhere in
+  `crates/*/Cargo.toml` or `crates/**/*.rs` in the workspace. DuckDB really is a new
+  dependency.
+
+### 9.2 S1 — GO, but not with the `duckdb` crate
+
+**The blocking sub-finding: the crates.io `duckdb`/`libduckdb-sys` pair cannot be used.**
+Both max out at `1.20000.1` (DuckDB **1.2.0**), while the DuckLake extension is only
+published for DuckDB **≥ 1.3.0** — probed directly:
+
+```
+http://extensions.duckdb.org/v1.2.0/osx_arm64/ducklake.duckdb_extension.gz -> 404
+http://extensions.duckdb.org/v1.3.0/osx_arm64/ducklake.duckdb_extension.gz -> 200
+http://extensions.duckdb.org/v1.4.0/osx_arm64/ducklake.duckdb_extension.gz -> 200
+http://extensions.duckdb.org/v2.0.0/osx_arm64/ducklake.duckdb_extension.gz -> 200
+```
+
+So the choice is a hand-declared C-API subset (what the spike did) or a patched
+`libduckdb-sys`; either way the connector owns its bindings and pins the library version.
+That is a **supply-chain** finding as much as a technical one: an upstream PR (option B)
+would be asked to add FFI *and* a pinned prebuilt C++ library.
+
+Everything else about S1 is a clean yes, verified in a Rust process linked against
+`libduckdb` **v2.0.0**:
+
+- **Linking works with no CMake step at all.** DuckDB publishes prebuilt artifacts, so the
+  feared "CMake clash with Feldera's build" does not arise — there is nothing to compile
+  from C++ source:
+  `duckdb-shared-libs-{linux,osx}-{amd64,arm64}.tar.gz` and
+  `duckdb-static-libs-{linux,osx}-{amd64,arm64}.tar.gz` (`duckdb-static-libs-osx-arm64`
+  present in the v2.0.0 release; `libduckdb-osx-arm64.zip`, the name used by older
+  releases, is **404** — the shared/static-libs names replaced it).
+- **The dylib is relocatable:** install name is `@rpath/libduckdb.dylib`, dependencies are
+  `/usr/lib/libc++.1.dylib` and `/usr/lib/libSystem.B.dylib` only. Vendoring it and
+  setting an rpath is sufficient; no absolute build-tree path leaks in.
+- **The extension loads, autoloaded from the repository:**
+  `LOAD ducklake` → `ducklake | true | 417a9117f5 | REPOSITORY` in `duckdb_extensions()`,
+  with `extension_directory` pointed at a scratch dir so the download is explicit.
+- **The extension also loads from a vendored absolute path**, with no repository access:
+  `LOAD '/path/ducklake.duckdb_extension'` → `extension_version 417a9117f5`. The file is
+  43,165,870 bytes, `sha256 = 78736bf48c045548444dd31ce8e5176dfbcb8df4eb58d8518ce93cb40c3a39bc`.
+  Its `.info` sidecar records url
+  `http://extensions.duckdb.org/v2.0.0/osx_arm64/ducklake.duckdb_extension.gz` and
+  signature `782279e7bec2941a1b28276782068b4f`. **Vendoring is therefore viable, and it is
+  the recommended shipping mode**: no network at pipeline start, checksum pinned in-tree.
+- **The shipped binary is properly signed:** it loads with `allow_unsigned_extensions`
+  left at its default `false`. The spike's `--no-unsigned` path is the proof; no
+  security-weakening config is needed as long as the vendored file is the official build.
+- **Extension binaries are per-platform**, so "portable enough to ship" means one vendored
+  file per target (`linux_amd64`, `linux_arm64`, `osx_amd64`, `osx_arm64`,
+  `windows_amd64` were all probed and all return 200 at v2.0.0). A build that ships one
+  platform's file on another fails at `LOAD`.
+- **Threading is manageable.** DuckDB connections are single-threaded objects, and the C
+  API is not async, so the connector either keeps one connection on a dedicated thread and
+  talks to it over a channel, or uses `tokio::task::spawn_blocking` per statement. Both fit
+  the `OutputEndpoint`/`InputReader` shapes, whose methods are already allowed to block on
+  a dedicated thread (see §9.4 — with the cancellation rule attached).
+
+**Verdict: GO.** The engine can host `libduckdb` + DuckLake in-process. The cost is a
+vendored binary, a pinned version and hand-written bindings — not a redesign of the
+protocol.
+
+### 9.3 S2 — YES, and the two catalog backends fail differently
+
+The question assumes one regime; there are two, and the protocol needs the difference.
+
+**File-backed catalog (`ducklake:/path/meta.ducklake`, a DuckDB file) — hard exclusivity,
+including readers.** A second *process* cannot even attach while the first holds the file,
+and `(READ_ONLY)` does not help, because DuckLake opens the metadata catalog read-write
+regardless:
+
+```
+IO Error: Failed to attach DuckLake MetaData "__ducklake_metadata_dl" at path + "/tmp/s2/meta.ducklake"
+Could not set lock on file "/private/tmp/s2/meta.ducklake": Conflicting lock is held in
+/Users/monochromatti/Code/ducklake-ffi-spike/target/debug/spike (PID 36005) by user monochromatti.
+See also https://duckdb.org/docs/current/connect/concurrency
+```
+
+This is good news for the protocol: "one pipeline per catalog" is not a policy the
+operator must respect, it is mechanically enforced by the storage. **Crash behaviour:**
+`SIGKILL` mid-transaction (row inserted, `COMMIT` never reached) leaves the catalog
+consistent — the row is absent, no snapshot was appended, and the OS releases the lock, so
+the next process attaches normally. Uncommitted staging is invisible, as `stage_is_invisible`
+requires.
+
+**PostgreSQL catalog** (`ducklake:postgres:dbname=ducklake host=127.0.0.1 port=55432
+user=postgres password=…`, the realistic production shape) — **no file lock; several
+processes attach and write concurrently.** Verified with two independent OS processes
+against the local `ducklake-pg` container:
+
+- Both processes run `UPDATE … WHERE output_group='a' AND frontier=0` inside `BEGIN`, both
+  see **1 affected row** (each read its own snapshot where the guard was still `0`), both
+  call `COMMIT`. The loser is rejected *at commit*:
+  ```
+  TransactionContext Error: Failed to commit: Failed to commit DuckLake transaction.
+  Transaction conflict - attempting to insert into table with index "2" - but another transaction has deleted inlined data from it
+  ```
+  Final state: `a | 2` — one winner, no lost update, no duplicate. The two-connection case
+  in a *single* process is identical with `index "1"`.
+- **The CAS in the `WHERE` clause alone is therefore not the safety net**; it cannot even
+  see the other writer's uncommitted row, which is why both writers report 1 affected row.
+  The net is (a) the catalog's commit-time conflict, which must be caught and retried with
+  the **same** batch identity, and (b) the read-back inside the transaction.
+- **Read-back works and is load-bearing.** A stale publisher on a *fresh* snapshot (no
+  concurrency) gets `UPDATE … 0` rows, its `COMMIT` succeeds as a no-op, and the guard is
+  unchanged; the in-transaction re-read sees the other publisher's frontier (`5`), which is
+  the mismatch `publish` raises on. Both mechanisms are needed; neither is redundant.
+
+**Consequences the port must honour (recorded so they are not rediscovered as bugs):**
+1. The connector holds one connection (or one connection pool pinned to one thread) for the
+   pipeline's lifetime. File-catalog deployments cannot have a second writer, and that is
+   acceptable — it is what the storage does anyway.
+2. Retry on commit-time conflict, up to 8 attempts, with identical
+   `(generation, epoch, base, end, digest)`. "UPDATE affected 1 row" is **not** success.
+3. Re-read the guard in the same transaction before `COMMIT`; on mismatch, roll back and
+   treat as "someone else committed".
+4. In-flight transactions die with the process and are rolled back by the catalog; the
+   protocol does not need a recovery path for them — the identity check covers the retry.
+
+**Verdict: YES**, unchanged default (one pipeline per catalog), with the added finding
+that concurrent-writer correctness rests on commit-time conflicts plus read-back, not on
+the conditional `WHERE`.
+
+### 9.4 S3 — viable, but four engine facts change the connector design
+
+Verified against `288cd64a`. The engine has the machinery, and using it removes
+`journal.py` entirely — but the output side is *not* a place where returning an error is
+enough.
+
+**Input replay (good news).** The engine persists the seek position in each checkpoint and
+journals every step since, with the replay payload and a checksum
+(`crates/connectors/src/controller/journal.rs:11-45`, `InputLog { data: RmpValue, metadata:
+JsonValue, checksums: InputChecksums }` at `:64-78`). A connector opts in with
+`InputEndpoint::fault_tolerance() -> Option<FtModel>`, gets the position back through
+`TransportInputEndpoint::open(..., resume_info)`, then receives one
+`InputReaderCommand::Replay { metadata, data }` per journaled step and calls
+`InputConsumer::replayed(amt, hash)` and
+`extended(amt, Some(Resume::Replay { seek, replay, hash }), watermarks)` **for every step**
+(`crates/adapterlib/src/transport.rs:1219-1225`). Checksum mismatch fails the circuit. So
+the Rust port's "journal" is the engine's, and `Resume::seek()` (a `JsonValue`) is the only
+connector state that survives — a DuckLake position expressible as JSON is exactly that.
+
+**Four caveats:**
+1. **Fault tolerance is enterprise-gated.** `crates/connectors/src/server.rs:945-947`
+   refuses to start with `ControllerError::EnterpriseFeature("fault tolerance")` when
+   `feldera-enterprise` is off and the config enables FT; `can_checkpoint()`
+   (`crates/connectors/src/controller.rs:9708-9730`) additionally requires configured
+   `storage` and every input endpoint reporting FT. An OSS build of the fork gets
+   at-least-once, and the connector must not assume journaling exists.
+2. **There is no connector-internal checkpoint hook and no "checkpoint committed"
+   callback.** The only signal is `InputReader::queue(checkpoint_requested: bool)`, which
+   means *this step is a barrier*, not *a checkpoint landed*. Anything not derivable from
+   the persisted `seek: JsonValue` is lost on restore — a reason to keep the reader's
+   position a pure function of catalog state.
+3. **Output errors do not stop the pipeline, so the endpoint must hold.**
+   `push_batch_to_encoder` (`crates/connectors/src/controller.rs:9123-9136`) and
+   `OutputProbe` (`:10528-10587`) route failures to
+   `output_transport_error`/`encode_error`, which only bump stats and call the error
+   callback; `is_fatal_controller_error` (`crates/connectors/src/server.rs:1452-1460`)
+   matches only `DbspError`/`DbspPanic`/`ControllerPanic`, and progress accounting advances
+   regardless (`controller.rs:9286-9292` drives `steps_processed` from the circuit). **A
+   failed publish is therefore counted as a processed step** — precisely the loss the
+   protocol exists to prevent. The `OutputEndpoint` trait has no `flush`/`close`, and
+   `batch_end` is the durability point that no shutdown path calls. The fix is the Kafka FT
+   sink's pattern: report fatal, **hold the output thread until shutdown**, and stay
+   cancellation-responsive via `ControllerInner::shutdown_token` +
+   `CancellationToken::run_until_cancelled` — the trait's own doc says an unbounded wait
+   hangs teardown (`crates/adapterlib/src/transport.rs:1440-1457`).
+4. **Where the batch identity comes from, and the one config that breaks it.** There is no
+   `EncoderMetadata` and no `Encoder::encode_txn` in this workspace (grep: no hits). The
+   `Encoder` trait is two methods (`crates/adapterlib/src/format.rs:716-729`: `consumer()`,
+   `encode(batch)`), and identity arrives through `OutputConsumer::batch_start(step, kind)`
+   (`format.rs:737`), whose first argument is the **DBSP transaction id**, documented at
+   `crates/connectors/src/controller.rs:6849-6852` as "reproduced deterministically across
+   replay, unlike the physical step". With the default config that is exactly one batch per
+   transaction, empty steps skipped (`controller.rs:9255-9263`) — the shape the protocol
+   needs. With `enable_output_buffer: true`
+   (`crates/feldera-types/src/config.rs:3787`, default `false`) batches are regrouped by
+   size/time and `batch_start` receives only `output_buffer.buffered_transaction`,
+   "Transaction of the last update in the buffer" (`controller.rs:7084-7086`, `:7153`;
+   flush at `:9198-9215`). One publication would then span several transactions while
+   claiming the last one's id, silently violating the identity rule `publish_idempotent`
+   relies on. **The connector must reject `enable_output_buffer: true` in its config
+   validation rather than tolerate it.**
+
+**Verdict: usable.** Stage C is simpler than the Python version (no local journal). Stage B
+carries a hard requirement the brief did not state: on any publish failure the endpoint
+must block until cancelled rather than return, or the pipeline will report progress it did
+not make.
+
+### 9.5 Catalog behaviour found while spiking (supersedes assumptions in §1)
+
+- **`UPDATE … RETURNING` is rejected on DuckLake tables:**
+  `Binder Error: RETURNING clause not yet supported for updates of a DuckLake table`.
+  `publish` must `UPDATE` then `SELECT` in the same transaction — which is what
+  `catalog.py:380` already does, and what `formal/REPORT.md` records. Any Rust attempt to
+  use `RETURNING` fails at the binder, not at runtime.
+- **`ducklake_table_changes` is inclusive on both bounds, confirmed directly:**
+  `ducklake_table_changes('dl','main','t',3,4)` and `(…,4,4)` return the **identical** row
+  set, so using `end` as the next `start` re-delivers the boundary snapshot. This is §1.3's
+  defect #1, reproduced in the Rust harness; the `start + 1` rule is not optional.
+- **`ducklake_table_changes` has no `table_name` column** (`Binder Error: Referenced column
+  "table_name" not found`); its columns are `snapshot_id, rowid, change_type, <table
+  columns>`. Change rows are identified by `(snapshot_id, rowid)`.
+- **`ducklake_snapshots('dl')` columns** are `snapshot_id, snapshot_time, schema_version,
+  changes MAP(VARCHAR, VARCHAR[]), author, commit_message, commit_extra_info`.
+  `ducklake_current_snapshot('dl')` returns a single column named **`id`**, not
+  `snapshot_id`.
+- **PostgreSQL attach syntax** (no file path):
+  `ATTACH 'ducklake:postgres:dbname=ducklake host=127.0.0.1 port=55432 user=postgres
+  password=…' AS dl`. The local container `ducklake-pg` (`postgres:16-alpine`, port 55432,
+  password `duck`, database `ducklake`) serves this and is what the concurrency spike used.
+- **The timezone hazard in §1.3 (defect #2, `pytz`) does not exist in this shape:** it is a
+  *Python* dependency of `DuckLake.snapshots()`, reached through `catalog.py`'s JSON
+  handling. Going through the C API reads `TIMESTAMP WITH TIME ZONE` as text, so the Rust
+  side has no `pytz` equivalent to declare — but it inherits the formatting rule, and the
+  `snapshot_time` string must not be parsed to decide protocol state (only the integer
+  snapshot id is protocol state).
+
+### 9.6 Wire-format divergence check (§How-to-start)
+
+`v0.374.0 → 288cd64a` is 13 commits / 38 changed files, and only two of them touch
+connector-adjacent code: `crates/connectors/src/integrated/delta_table/input.rs` and
+`crates/feldera-types/src/config/ignored.rs`. Nothing under `crates/adapterlib/src/`
+changed — `transport.rs`, `format.rs` (`Encoder`, `OutputConsumer`) and the controller's
+egress path are identical. **The captured v0.374.0 egress format remains the contract; do
+not regenerate `tests/test_wire_format.py`.**
+
+### 9.7 What this changes in the rest of this brief
+
+Recorded rather than silently editing the stages:
+
+- **§3 Stage A** must include the vendored-library decision (one prebuilt `libduckdb` per
+  target, checksummed) and cannot start from the `duckdb` crate.
+- **§3 Stage B** gains the "hold until cancelled on failure" requirement from §9.4.3, the
+  retry/read-back rules from §9.3 as explicit tests, and a config check that refuses
+  `enable_output_buffer: true` (§9.4.4).
+- **§3 Stage C** loses the local journal: replay is `Resume::Replay` against the engine's
+  journal, and the reader's position must be a pure function of catalog state.
+- **§5 validation** can use the file-backed catalog for the two-publisher scenarios only in
+  *one* process; across processes, only the PostgreSQL catalog exercises them (file
+  catalogs refuse the second attach). Both belong in the suite: the file catalog proves the
+  "one pipeline per catalog" regime, the PostgreSQL catalog proves the CAS.
+- **§2's S2 question "must the connector hold an exclusive connection?"** is answered
+  differently per backend — keep it that way in the docs rather than promising one answer.
+
+### 9.8 Session 2 entry conditions
+
+1. `git clone` (or copy) upstream to `~/Code/feldera`, `git switch -c ducklake-connector` at
+   `288cd64a`, and rebuild the baseline there with the two workarounds from §9.1 so the
+   first commit starts from a known-green tree.
+2. Stage A only: `TransportConfig::DuckLakeInput`/`DuckLakeOutput`, `with-ducklake` feature
+   (mirroring `with-deltalake` in `crates/connectors/Cargo.toml:21-28`), config structs, and
+   a no-op endpoint that compiles — no catalog access yet.
+3. Re-read §9.3 and §9.4 before writing Stage B: they carry requirements that are cheap to
+   satisfy at design time and expensive to retrofit.
