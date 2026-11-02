@@ -11,6 +11,9 @@ dependencies = [
   "pytz>=2024.1",
 ]
 
+[project.scripts]
+fd-connectors = "fd_connectors.cli:main"
+
 [dependency-groups]
 dev = ["pytest>=8.2", "ruff>=0.7"]
 
