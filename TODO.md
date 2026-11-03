@@ -765,4 +765,83 @@ in the two files it touches; accepted rather than bypassed with `#[rustfmt::skip
 arguments are the framework's and dropping the field means rewriting the constructor in Stage B.
 
 **Open objectives:** Stage B (writer: guard row, one-transaction apply, hold-until-cancelled,
-read-back verification) — not started (m00001 §3).
+read-back verification) — done, see §11; Stage C (reader) not started (m00001 §3).
+
+## 11. Session 3 result (Stage B — the writer)
+
+Committed in `~/Code/feldera` as `a2d2081 feat: publish DuckLake output with a guard row per
+step` (parent `845e79d`), branch `ducklake-connector`, pushed to the **fork**
+`monochromatti/feldera` — `origin` is `feldera/feldera`, which refuses the push (`Permission to
+feldera/feldera.git denied to monochromatti`, HTTP 403). The fork remote is named `fork`.
+
+### 11.1 What is there
+
+| Module | Contents |
+|---|---|
+| `crates/connectors/src/integrated/ducklake/protocol.rs` | batch identity, `Guard`, total `decide`, `advance`, `acquire_ownership`, `validate`, digest. Pure: no I/O, no connections |
+| `crates/connectors/src/integrated/ducklake/catalog.rs` | attach, guard row, `publish` (one transaction), `take_over`, identifier/literal quoting |
+| `crates/connectors/src/integrated/ducklake/ffi.rs` | DuckDB C API subset via `dlopen`; `Value`/`Rows` adapters |
+| `crates/connectors/src/integrated/ducklake/writer.rs` | `OutputEndpoint` + `Encoder` + `OutputConsumer` on one type |
+
+19 unit tests in the module (`cargo test -p dbsp_connectors --lib integrated::ducklake`).
+
+### 11.2 The claims, and how they are checked
+
+- **One transaction.** `Catalog::publish` does `BEGIN` → read guard → `decide` → conditional
+  `UPDATE ... WHERE output_group = ? AND generation = ? AND epoch = ? AND frontier = ?` → payload
+  → re-read the guard → `COMMIT`. A publisher that lost the race updates zero rows and the
+  re-read raises instead of double-applying. A conflict (`conflict`, `transactioncontext`,
+  `failed to commit`, `optimistic`, `write-write`) is retried with the *same* batch identity.
+- **Replay is a duplicate.** `frontier == end` ⇒ `Duplicate`, and — new relative to
+  `protocol.py` — a committed digest that differs from the replayed payload is an **error**, not
+  a duplicate, so a divergence stops the writer instead of being papered over.
+- **Overtaken is stale.** `frontier > end` ⇒ `Stale`; a `base` that is not the frontier ⇒
+  `Stale`. Because a DBSP transaction id is monotone across replay (unlike the Python bridge's
+  restarting step counter) `base` degrades from identity input to a consistency assertion.
+- **Real catalog, real commit.** `a_published_step_and_a_replayed_step_leave_one_copy_of_its_rows`
+  attaches a DuckLake metadata file through the same `Catalog::open` a deployment uses, publishes
+  a step, replays it (duplicate, `count(*)` stays `1`), then offers an overtaken step (stale,
+  rows unchanged). It skips unless `DUCKLAKE_DUCKDB_LIB` and `DUCKLAKE_EXTENSION_DIR` are set,
+  since the connector does not build DuckDB in.
+
+### 11.3 Decisions that constrain Stage C
+
+- **No `with-ducklake` cargo feature.** Nothing is a build-time dependency: `libduckdb` is
+  `dlopen`ed from `$DUCKLAKE_DUCKDB_LIB` (or the loader's search path) and the extension is a
+  vendored signed binary pointed at by `extension_directory`. The only new dependency is `hex`
+  (workspace pin, for digest rendering), added next to the existing `sha2`. Stage A's note said
+  the feature would "arrive with the FFI"; it turned out there is nothing for it to gate, and a
+  knob that gates only a stub's presence is worse than no knob.
+- **Rows are read from the batch reader, not from a byte buffer.** `Encoder::encode` walks
+  `batch.cursor(RecordFormat::Json(JsonFlavor::Default))` and turns `serialize_key` into a
+  `serde_json::Value` per row, expanding weight into repeated deltas (cap `MAX_MULTIPLICITY =
+  1024`, above which it errors rather than materialising a huge multiplicity). The identity
+  arrives separately at `OutputConsumer::batch_start(transaction, kind)` — verified in
+  `crates/connectors/src/controller.rs:9123-9136`, which calls `consumer().batch_start(...)`,
+  `encoder.encode(batch)`, `consumer().batch_end()`.
+- **A failed publish holds the output thread.** It reports through
+  `OutputEndpointCallbacks::error(fatal, ..)` and then sleeps in 200 ms steps until the shutdown
+  token is cancelled. Returning an error instead would let the engine count the step as
+  processed while its rows are not in the catalog. Holding is bounded: the output thread is only
+  joined *after* the token is cancelled.
+- **`is_fault_tolerant()` now returns `true`**, which is the guard row's whole point: a replayed
+  step is a no-op.
+
+### 11.4 Build/test recipe correction (supersedes §9.1/§10)
+
+`nix shell nixpkgs#rdkafka ...` alone is not enough on this machine: `rdkafka-sys` wants
+`rdkafka >= 2.12.1` and the nixpkgs `rdkafka` output that lands on `PATH` is `2.12.0`. The dev
+output in the store is `2.13.0-dev`, which satisfies it, and `pkg-config` must be on `PATH`:
+
+```bash
+export PKG_CONFIG_PATH=/nix/store/dva2i5412aw8g9c3w1fvw6h5rnnf0mdf-rdkafka-2.13.0-dev/lib/pkgconfig:/nix/store/1r8aqzrrpghyxwb7wx3b0hmm0d7aq364-openssl-3.6.5-dev/lib/pkgconfig:/nix/store/0a483npd9jfmlfbxd9m67vf7zqyk0jmc-zstd-1.5.7-dev/lib/pkgconfig
+export WEBCONSOLE_BUILD_DIR=/tmp/webconsole-stub
+nix shell nixpkgs#pkg-config -c ~/.cargo/bin/cargo test -p dbsp_connectors --lib integrated::ducklake
+```
+
+`cargo check -p dbsp_connectors --no-default-features` needs no kafka at all and is the fast
+loop; its one remaining warning (`MemoryUseReporter::current` unused) is pre-existing and caused
+by the disabled features, not by this work.
+
+**Open objectives:** Stage C (reader: snapshot bootstrap, `ducklake_table_changes` polling,
+`start_snapshot + 1`), not started (m00001 §3).
