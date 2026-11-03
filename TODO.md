@@ -876,8 +876,13 @@ DUCKLAKE_DUCKDB_LIB   # .../lib/libduckdb.dylib|so   what `ffi.rs` dlopens
 DUCKLAKE_EXTENSION_DIR  # .../v2.0.0/<platform>/     what `extension_directory` points at
 ```
 
-and `fd-rust-integration` runs them (`FELDERA_TREE=<checkout>` first), because the tests live
-beside the Rust code, not in this repo.
+and nothing else: there is deliberately no `fd-rust-integration` script. The tests live beside the
+Rust code in the Feldera tree, and this shell cannot run them anyway — its `ld` is nixpkgs'
+`cctools` `ld64`, which refuses to link the workspace's test binary (`ld: b(l) ARM64 branch out
+of range (178028860 max is +/-128MB)` from a `ctor` object). Overriding the linker
+(`CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/clang`) is not enough, because Apple's
+`clang` still resolves `ld` from `PATH`, which is the nix one. Run them in a plain shell per
+§12.3 instead.
 
 ### 12.2 Facts verified in the nix shell (2026-06, DuckDB 2.0.0 "Cyanoptera" `d54cbbe3df`)
 
@@ -910,3 +915,39 @@ beside the Rust code, not in this repo.
 **Open objectives:** Stage C (reader: snapshot bootstrap, `ducklake_table_changes` polling
 over `(applied, current]`, `InputConsumer` output, the new-vs-initially-present identity
 mechanism from §11.3), not started (m00001 §3).
+
+### 12.3 The writer is live-tested (added after this section was first written)
+
+`crates/connectors/src/integrated/ducklake/tests_live.rs` in the Feldera tree runs the real
+thing — real `libduckdb`, real signed extension, real catalog file — and both of its tests pass
+under the nix shell (0.59s):
+
+- `publishing_the_same_batch_twice_applies_it_once` — first publish `Apply`, republication
+  `Duplicate`, frontier `1`, `count(*) = 2`.
+- `the_frontier_survives_reopening_the_catalog` — after reattaching, the frontier is still `1`
+  and a replay applies nothing.
+
+They skip when `DUCKLAKE_DUCKDB_LIB`/`DUCKLAKE_EXTENSION_DIR` are unset, so a plain
+`cargo test` stays green. Two corrections to what was assumed earlier in this section:
+
+- **There is no `with-ducklake` cargo feature**, and there should not be one. The module is
+  compiled unconditionally: it adds no dependency (`libc`'s `dlopen`/`dlsym` is already there)
+  and the DuckDB library is loaded at run time, not linked. The Stage A commit message said the
+  feature "arrives with the FFI"; that was wrong and is corrected here.
+- **The build needs `PKG_CONFIG_PATH`/`LIBRARY_PATH`**, not just the two `DUCKLAKE_*`
+  variables. The working invocation on darwin/arm64:
+
+  ```bash
+  nix shell nixpkgs#rdkafka nixpkgs#pkg-config nixpkgs#openssl.dev nixpkgs#zstd -c bash -c '
+    export PKG_CONFIG_PATH=$(for d in $(echo "$PATH" | tr : "\n"); do p=$(dirname "$d")/lib/pkgconfig; [ -d "$p" ] && echo "$p"; done | tr "\n" ":")
+    export LIBRARY_PATH=$(for d in $(echo "$PATH" | tr : "\n"); do p=$(dirname "$d")/lib; [ -d "$p" ] && echo "$p"; done | tr "\n" ":")
+    cargo test -p dbsp_connectors --lib tests_live -- --test-threads=1
+  '
+  ```
+
+  The `$PATH`-derivation is what makes it work without hard-coding store paths, and it also
+  works as a one-liner in a plain shell if the four packages are already in `PATH`.
+
+  `--no-default-features` is not an escape hatch from the `librdkafka` dependency: upstream's
+  `server.rs` tests do not compile without the default features (unresolved imports of
+  `csv_messages`, `pause_input_endpoint`, `start_input_endpoint`).

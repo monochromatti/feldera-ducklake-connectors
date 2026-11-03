@@ -104,17 +104,6 @@ in
       uv run pytest tests/test_end_to_end.py -q "$@"
     '';
 
-    # The connector's own integration tests: real DuckDB, real DuckLake, no
-    # Feldera.  They live beside the Rust code in the Feldera tree, so point
-    # FELDERA_TREE at a checkout; `DUCKLAKE_DUCKDB_LIB` above is what makes them
-    # run rather than skip.
-    "fd-rust-integration".exec = ''
-      set -eu
-      tree="''${FELDERA_TREE:?set FELDERA_TREE to a feldera checkout}"
-      cd "$tree"
-      cargo test -p dbsp_connectors --features with-ducklake ducklake "$@"
-    '';
-
     "feldera-up".exec = ''
       set -eu
       name="''${FELDERA_CONTAINER:-feldera}"
