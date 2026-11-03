@@ -951,3 +951,71 @@ They skip when `DUCKLAKE_DUCKDB_LIB`/`DUCKLAKE_EXTENSION_DIR` are unset, so a pl
   `--no-default-features` is not an escape hatch from the `librdkafka` dependency: upstream's
   `server.rs` tests do not compile without the default features (unresolved imports of
   `csv_messages`, `pause_input_endpoint`, `start_input_endpoint`).
+
+## 13. Stage C result (the reader)
+
+The reader is in the Feldera tree as `crates/connectors/src/integrated/ducklake/reader.rs`,
+behind the `IntegratedInputEndpoint` impl in `ducklake.rs`; `catalog.rs` gained the shared
+`attach_statement(catalog, read_only)`, so a reader attaches `READ_ONLY` and cannot write the
+guard row even by accident.
+
+It is a cursor over committed snapshots: one transactional **bootstrap** read of the table,
+then `ducklake_table_changes(alias, schema, table, applied + 1, current)` for every newly
+committed snapshot, pushing each row with the polarity its `change_type` implies
+(`insert`/`update_postimage` +1, `delete`/`update_preimage` −1). An unknown `change_type` is
+an error, not a skipped row.
+
+### 13.1 Two corrections to §12
+
+- **`ducklake_current_snapshot(catalog)` is the reader's function, not
+  `ducklake_last_committed_snapshot(catalog)`.** The latter returns `NULL` in a session that has
+  not itself committed anything, which is exactly the reader's situation. `current_snapshot`
+  returns the last committed snapshot in a fresh session, inside a read-only transaction, and
+  inside a transaction that has uncommitted writes (it keeps reporting 3 while 4 is pending).
+  Measured against a real 2.0.0 catalog.
+- **Reading the snapshot number and the rows must be one transaction.** Taking the number
+  first and the rows second can double count a concurrent commit; the other order can miss one.
+  This is why every read attempt runs inside `BEGIN … COMMIT` on one connection.
+
+### 13.2 What the change feed actually returns (measured)
+
+```
+snapshot_id | rowid | change_type      | id | name
+2           | 0     | insert           | 1  | a
+3           | 0     | update_postimage | 1  | a2
+3           | 2     | insert           | 3  | c
+3           | 0     | update_preimage  | 1  | a
+3           | 1     | delete           | 2  | b
+```
+
+- the window is **inclusive at both ends**: `(3, 3)` is snapshot 3 alone, and reading `(2, 3)`
+  returns snapshot 2's inserts as well — hence the lower bound `applied + 1`;
+- the table's own columns are interleaved with `snapshot_id`/`rowid`/`change_type`, so the
+  reader projects `to_json({'col': "col", …})` from the relation rather than `to_json(*)`;
+- an `end` beyond the last snapshot is an error (`No snapshot found at version 10`), so the
+  reader only asks when `current > applied`.
+
+### 13.3 Evidence
+
+`cargo test -p dbsp_connectors --lib ducklake`: **23 passed**, including four live tests against
+a real `libduckdb` 2.0.0 + signed extension (`tests_live.rs`): the two writer tests from §12.3,
+plus `bootstrap_reads_the_table_once_and_records_its_snapshot` and
+`a_new_snapshot_is_replayed_with_its_change_types` (0.79s with the environment set; without
+`DUCKLAKE_DUCKDB_LIB`/`DUCKLAKE_EXTENSION_DIR` they skip, so check they ran, not just passed).
+
+### 13.4 Not done
+
+- **No pipeline has run against it.** The four live tests drive `advance()` and the writer
+  directly, not a controller, so the `InputReader` command protocol (`Extend`/`Pause`/`Queue`/
+  `Replay`/`Disconnect`), the checkpoint metadata round trip and `AtLeastOnce` recovery are
+  written to the documented contract but not yet observed. That needs the Feldera stack
+  (`feldera-up`) and is the next step.
+- `send_snapshot` in the reader config is declared but unused: the bootstrap always sends the
+  snapshot (deduplicating an `insert_delete` *update* stream cannot start without it).
+- A PostgreSQL catalog lets a reader and a writer run concurrently; only the file-catalog
+  single-process behaviour is covered by tests.
+- No end-to-end run of reader + writer in one pipeline (a pipeline that both reads and writes
+  one catalog is the interesting shape, and it is untested).
+
+**Open objectives:** the pipeline-level verification in §13.4 (reader command protocol,
+checkpoint resume, `feldera-up` end-to-end), not started (m00001 §3, m01088).
