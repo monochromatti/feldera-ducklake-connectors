@@ -845,3 +845,68 @@ by the disabled features, not by this work.
 
 **Open objectives:** Stage C (reader: snapshot bootstrap, `ducklake_table_changes` polling,
 `start_snapshot + 1`), not started (m00001 §3).
+
+## 12. The Nix test environment (added after Stage B, unblocks Stage C)
+
+Stage C's reader needs a real DuckLake and **not** a real Feldera: its obligations are
+attach → `ducklake_current_snapshot` → `ducklake_table_changes` over `(applied, current]` →
+rows into an `InputConsumer`, and all of that can be driven in-process with a fake consumer.
+What was missing was a hermetic DuckDB 2.0.0 and the matching extension. That is now pinned.
+
+### 12.1 What is pinned, and where
+
+`nix/ducklake-2.0.nix` exposes three derivations, wired into `devenv.nix`:
+
+| Derivation | Source | Why not nixpkgs |
+|---|---|---|
+| `libduckdb` (2.0.0) | `duckdb-shared-libs-<platform>.tar.gz` from the `v2.0.0` GitHub release | nixpkgs is on **1.5.2**; an extension loads only into the build it was compiled against, so the version is ABI, not preference |
+| `cli` (2.0.0) | `duckdb-cli-<platform>.tar.gz`, same release | a 1.5.x CLI cannot open a 2.0 catalog file at all |
+| `extension` | `extensions.duckdb.org/v2.0.0/<platform>/ducklake.duckdb_extension.gz` | needs egress at `INSTALL` time; version-specific anyway |
+
+Asset names differ between the two archives — `osx-arm64` / `linux-amd64` in the release,
+`osx_arm64` / `linux_amd64` in the extension repo — and are spelled out per platform so a
+typo fails at evaluation rather than at the first `LOAD`. Hashes recorded: `aarch64-darwin`
+and `x86_64-linux`; any other platform `throw`s with the `nix store prefetch-file` command
+that records one, rather than guessing.
+
+The shell exports what the Rust tests look for:
+
+```bash
+DUCKLAKE_DUCKDB_LIB   # .../lib/libduckdb.dylib|so   what `ffi.rs` dlopens
+DUCKLAKE_EXTENSION_DIR  # .../v2.0.0/<platform>/     what `extension_directory` points at
+```
+
+and `fd-rust-integration` runs them (`FELDERA_TREE=<checkout>` first), because the tests live
+beside the Rust code, not in this repo.
+
+### 12.2 Facts verified in the nix shell (2026-06, DuckDB 2.0.0 "Cyanoptera" `d54cbbe3df`)
+
+- **`dlopen` of the store copy works** — `ctypes.CDLL($DUCKLAKE_DUCKDB_LIB)` reports
+  `v2.0.0`, so no codesign/xattr handling is needed on darwin and `ffi.rs`'s loader is
+  correct as written.
+- **`LOAD` reads the extension straight out of the read-only store directory.** Only
+  `INSTALL` writes `.info` files; a test therefore needs no writable copy of the extension,
+  only a writable place for the *catalog* and its data.
+- **Failure mode when the window's end does not exist:** `ducklake_table_changes` with an
+  `end_snapshot` beyond the catalog's current snapshot is an error, not a clamp —
+  `Invalid Input Error: No snapshot found at version 100`. The reader must read
+  `ducklake_current_snapshot('dl')` (single column `id`, `UINT64`) and clamp to it.
+- **Inclusivity re-confirmed on a fresh catalog** (create=1, insert=2, update=3, delete=4):
+  `ducklake_table_changes('dl','main','t',2,4)` returns snapshot 2's rows, and `(…,4,4)`
+  returns snapshot 4's — so the `start + 1` rule is exactly right and `(s, s)` is one
+  snapshot, not zero.
+- **An `UPDATE` yields two rows with the same `rowid`**, one `update_preimage` (old values)
+  and one `update_postimage` (new values); a `DELETE` carries the *old* row. The reader must
+  turn preimage into a retraction and postimage into an insert, and must not assume one row
+  per changed row.
+- **`ATTACH … (READ_ONLY)` works for reads and refuses writes**
+  (`Cannot execute statement of type "INSERT" on database "dl" which is attached in
+  read-only mode!`). So a read-only reader is expressible — but §9.3 still applies: with a
+  *file* catalog a second process cannot attach at all, so concurrency needs PostgreSQL.
+- **`extension_directory` is deprecated in 2.0** (`The 'extension_directory' setting is
+  deprecated and will be removed in a future release`) but still honoured. The connector
+  keeps it for now; the config field is the only way to pin the extension offline.
+
+**Open objectives:** Stage C (reader: snapshot bootstrap, `ducklake_table_changes` polling
+over `(applied, current]`, `InputConsumer` output, the new-vs-initially-present identity
+mechanism from §11.3), not started (m00001 §3).

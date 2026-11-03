@@ -8,6 +8,11 @@
 
 let
   python = pkgs.python313;
+  # DuckDB 2.0.0 and the DuckLake extension, pinned to the exact published
+  # builds.  Nixpkgs carries 1.5.2, and an extension only loads into the build
+  # it was compiled against, so `pkgs.duckdb` would silently be the wrong
+  # engine for these catalogs.
+  ducklake = import ./nix/ducklake-2.0.nix { inherit pkgs; };
 in
 {
   # ---------------------------------------------------------------------------
@@ -18,7 +23,10 @@ in
     pkgs.uv
     pkgs.jq
     pkgs.curl
-    pkgs.duckdb # the CLI, for poking at a catalog by hand
+    # The CLI, for poking at a catalog by hand.  Deliberately not
+    # `pkgs.duckdb`: that is 1.5.x and cannot open a 2.0 catalog file, and
+    # having both on PATH means the wrong one gets used half the time.
+    ducklake.cli
     pkgs.docker-client # to run the Feldera stack
     pkgs.lean4 # to re-check the protocol model this connector refines
     pkgs.postgresql_17 # a psql client for a PostgreSQL-backed DuckLake catalog
@@ -42,6 +50,13 @@ in
     FELDERA_URL = "http://127.0.0.1:18080";
     # DuckLake catalogs live under the project, not in $HOME.
     FD_CATALOG_ROOT = "${config.devenv.root}/.scratch/catalogs";
+    # What the Rust connector's integration tests need in order to run instead
+    # of skip: the shared library it `dlopen`s and the signed 2.0.0 extension.
+    # `LOAD` reads the extension straight out of the (read-only) store
+    # directory — verified: DuckDB writes `.info` files only on `INSTALL` — so
+    # no writable copy is needed.
+    DUCKLAKE_DUCKDB_LIB = "${ducklake.libduckdb}/lib/${ducklake.library}";
+    DUCKLAKE_EXTENSION_DIR = "${ducklake.extension}";
   };
 
   # ---------------------------------------------------------------------------
@@ -87,6 +102,17 @@ in
     # Skips itself if FELDERA_URL is not answering.
     "fd-e2e".exec = ''
       uv run pytest tests/test_end_to_end.py -q "$@"
+    '';
+
+    # The connector's own integration tests: real DuckDB, real DuckLake, no
+    # Feldera.  They live beside the Rust code in the Feldera tree, so point
+    # FELDERA_TREE at a checkout; `DUCKLAKE_DUCKDB_LIB` above is what makes them
+    # run rather than skip.
+    "fd-rust-integration".exec = ''
+      set -eu
+      tree="''${FELDERA_TREE:?set FELDERA_TREE to a feldera checkout}"
+      cd "$tree"
+      cargo test -p dbsp_connectors --features with-ducklake ducklake "$@"
     '';
 
     "feldera-up".exec = ''
