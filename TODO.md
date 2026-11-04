@@ -1169,6 +1169,54 @@ Date: 2026-11-05. feldera `7d53c7e`, connectors (this commit).
   for concurrency in the first place, but a two-process run through
   `pipeline-manager` remains untested.
 
-**Open objectives:** the 18-scenario parity audit against `scenarios.py`, a single
-pipeline with both connectors, the two-process pipeline-manager run, and Stage E docs
-(m00001 §3, m01222).
+## 16. Stage E result (docs)
+
+Two pages, in the shape the other integrated connectors use
+(`docs.feldera.com/docs/connectors/{sinks,sources}/ducklake.md`), plus the sidebar entries.
+Feldera commit `fe160cb`.
+
+What they pin down, chosen because none of it is guessable from the code: the guard row and its
+columns; the schema contract (names match, DuckDB casts the types, deletes are key matches or
+one-row bag deletions); the `epoch`/`generation` takeover rule; and that the **file catalog is
+single-process while the PostgreSQL one is not**, which is what decides whether two pipelines
+may share a catalog.
+
+### 16.1 Three claims the docs forced me to correct
+
+Writing the pages down is what caught these; each was wrong in a way that only matters when
+someone acts on it.
+
+1. **"The connector adds itself as an exactly-once sink"** — false. No integrated output
+   connector declares a fault-tolerance model; that is the *pipeline's* setting. The writer is
+   safe *under* exactly-once because of the guard row, which is a different claim.
+2. **"`TRUNCATE`/`MERGE`/`REPLACE` arrive as row-level changes"** — unverified. The connector
+   does only ever emit row deltas, which is the true and sufficient statement; what a
+   particular statement of the *catalog's* turns into is the catalog's business.
+3. **"`enable_output_buffer` must be disabled"** — it was not enforced anywhere. See §16.2.
+
+### 16.2 A real gap found while writing the docs
+
+The writer never received `enable_output_buffer`, so a buffered pipeline would have handed it a
+batch spanning several steps and it would have recorded one step number for rows belonging to
+several — precisely the confusion the guard row exists to prevent. It is now refused at
+construction (`ControllerError::NotSupported`), passed through from `integrated.rs`, and the
+docs say "rejected" rather than "don't". Feldera commit `736d397`.
+
+That same commit relaxes the two-engine test's PostgreSQL bootstrap to a skip: it connected
+with `expect()`, so a machine without a server failed the suite for an environment reason.
+Re-run both ways to confirm — `3 passed` with the server absent (skip announced on stderr) and
+`3 passed` with it up.
+
+### 16.3 Not verified
+
+- **The docs site was not built.** `docs.feldera.com` needs `yarn install` (network) to run
+  `docusaurus build`; there is no `node_modules` in this checkout. Markdown structure and
+  anchors were checked by hand against a sibling page (`sinks/delta.md`), and the two pages
+  only use constructs that page already uses.
+- Nothing checks that the documented defaults equal the code's. They were compared by hand
+  against `crates/feldera-types/src/transport/ducklake.rs` (`schema` = `main`,
+  `guard_table` = `connector_guard`, `alias` = `dl`, `poll_interval` = `1s`,
+  `send_snapshot` = `true`); the OpenAPI round-trip test covers the shapes, not the prose.
+
+**Open objectives:** the 18-scenario parity audit against `scenarios.py`, a single pipeline
+with both connectors, and the two-process pipeline-manager run (m00001 §3, m01222).
