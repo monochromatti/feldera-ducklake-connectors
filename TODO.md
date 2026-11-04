@@ -1116,3 +1116,59 @@ caller that does call it.
 
 **Open objectives:** PostgreSQL-catalog two-engine test, the reader+writer pipeline, the
 18-scenario parity audit, and Stage E docs (m00001 §3, m01222).
+
+---
+
+## 15. The two-engine PostgreSQL test
+
+Date: 2026-11-05. feldera `7d53c7e`, connectors (this commit).
+**`3 passed; 0 failed … finished in 6.65s`** — the two file-backed cases plus the new one.
+
+### 15.1 Two facts a session needs before writing this test
+
+1. **DuckLake does not create the PostgreSQL database it stores metadata in.**
+   `ATTACH 'ducklake:postgres:dbname=dl_probe host=127.0.0.1 port=55432 user=postgres password=x'`
+   fails with
+   `IO Error: … Unable to connect to Postgres …: database "dl_probe" does not exist`.
+   The test therefore creates it through a plain `postgres` connection
+   (`CREATE DATABASE {name} TEMPLATE template0`), the way a deployment would, using the
+   harness's `Postgres` service (`POSTGRES_URL`, default
+   `postgres://postgres:password@localhost:5432`).
+2. **`postgres_scanner` must be vendored beside `ducklake`.** Attaching a PostgreSQL
+   catalog makes DuckDB autoload it; if it is not in `extension_directory`, DuckDB
+   *installs* it there, and on Nix that path is the read-only store:
+   `Cannot open file "…/postgres_scanner.duckdb_extension.tmp-<uuid>.duckdb_extension": Permission denied`.
+   `nix/ducklake-2.0.nix` now fetches both extensions (hashes recorded for
+   aarch64-darwin and x86_64-linux), so `DUCKLAKE_EXTENSION_DIR` contains both and no
+   install is attempted. This also corrected the claim in `devenv.nix` that "no
+   writable copy is needed" — true only for extensions already present.
+
+### 15.2 What the case asserts
+
+`two_engines_publishing_the_same_step_converge_on_one_outcome`:
+
+- Two controllers, each with its own file input, both publishing **the same two rows as
+  step 1** to one PostgreSQL-backed catalog. Each engine has its own DuckDB instance,
+  its own transaction and its own guard-row attempt — the configuration §9.3 could only
+  approximate with two cursors in one process.
+- The step numbers collide deliberately. The protocol makes the second writer see
+  `frontier == batch.end` with an identical digest and return `Duplicate`
+  (`protocol.rs`, `decide`), rather than applying the step twice.
+- **The assertion goes through a reader**, not through row counting: a third pipeline
+  reads the same catalog and must produce exactly two rows with weight `+1`. That also
+  covers what §13.4 listed as untested — a reader and writers sharing a catalog that is
+  not file-backed.
+
+### 15.3 What the case does not do
+
+- It publishes *identical* content, so the divergence branch (`decide` bailing when the
+  digest differs for a committed identity) is not exercised here; it stays covered by the
+  protocol unit test, which can control the digest directly.
+- The two engines are two controllers in one test process, not two OS processes. Each has
+  its own DuckDB instance and connections, which is what made the file catalog unusable
+  for concurrency in the first place, but a two-process run through
+  `pipeline-manager` remains untested.
+
+**Open objectives:** the 18-scenario parity audit against `scenarios.py`, a single
+pipeline with both connectors, the two-process pipeline-manager run, and Stage E docs
+(m00001 §3, m01222).

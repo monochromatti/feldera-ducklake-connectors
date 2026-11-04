@@ -40,6 +40,7 @@ let
       libHash = "sha256-w11gCAsxul0Ro85QWmgxvnhPADtMV10ypMK62ztBzfA=";
       cliHash = "sha256-GIo2/oiD71LmkWWgy7YDHvZ5yObESKHOIpUZZBSbf5Y=";
       extHash = "sha256-STxhjArlmYQJFF+EZ6iF5w7507YxKTS4azBoF7J904w=";
+      scannerHash = "sha256-SWozhpVYKpnbKCZZev/AMwek1+17ksly4mGt/kDwP+M=";
     };
     x86_64-darwin = {
       asset = "osx-amd64";
@@ -48,6 +49,7 @@ let
       libHash = null;
       cliHash = null;
       extHash = null;
+      scannerHash = null;
     };
     x86_64-linux = {
       asset = "linux-amd64";
@@ -56,6 +58,7 @@ let
       libHash = "sha256-mTrYnn38pmzW2plMLK0JDC/BYN359VBJigmKtLsTz7E=";
       cliHash = "sha256-xlByBrr3eTxgE9vYI2hGmkXyDcDhem+S8gRgL2Uu0rw=";
       extHash = "sha256-/xxzCl1afLFO2VR7oVwlnCSAXrTPEsF3J8Kk+v/hrac=";
+      scannerHash = "sha256-VLPXUcr8n/pDmIaxYH0O51jatNwHDwFx53m5Xy8+VU8=";
     };
     aarch64-linux = {
       asset = "linux-arm64";
@@ -64,6 +67,7 @@ let
       libHash = null;
       cliHash = null;
       extHash = null;
+      scannerHash = null;
     };
   };
 
@@ -83,7 +87,17 @@ let
     pkgs.fetchurl {
       url = "https://github.com/duckdb/duckdb/releases/download/v${version}/${name}.tar.gz";
       inherit hash;
-    };
+    };  # The extension files, in the order the install phase unpacks them.
+  extensionSources = [
+    (pkgs.fetchurl {
+      url = "https://extensions.duckdb.org/v${version}/${platform.extension}/ducklake.duckdb_extension.gz";
+      hash = need "extension" platform.extHash;
+    })
+    (pkgs.fetchurl {
+      url = "https://extensions.duckdb.org/v${version}/${platform.extension}/postgres_scanner.duckdb_extension.gz";
+      hash = need "postgres_scanner" platform.scannerHash;
+    })
+  ];
 in
 {
   inherit version;
@@ -130,24 +144,28 @@ in
     '';
   };
 
-  # The extension, laid out the way `extension_directory` expects:
-  # `<dir>/v<version>/<platform>/ducklake.duckdb_extension`.
+  # The extensions, laid out the way `extension_directory` expects:
+  # `<dir>/v<version>/<platform>/<name>.duckdb_extension`.
+  #
+  # `postgres_scanner` is vendored beside `ducklake` because a PostgreSQL catalog
+  # makes DuckDB autoload it: without it here, the first
+  # `ATTACH 'ducklake:postgres:…'` tries to download it into whichever
+  # `extension_directory` is set — which on Nix is a read-only store path, and
+  # therefore fails with `Permission denied` rather than an honest "no network".
   extension = stdenv.mkDerivation {
     pname = "ducklake-extension";
     inherit version;
-    src = pkgs.fetchurl {
-      url = "https://extensions.duckdb.org/v${version}/${platform.extension}/ducklake.duckdb_extension.gz";
-      hash = need "extension" platform.extHash;
-    };
+    srcs = extensionSources;
     nativeBuildInputs = [ pkgs.gzip ];
-    # Stdenv would try to unpack the `.gz` itself; the extension is not a tarball.
+    # Stdenv would try to unpack the `.gz` files itself; they are not tarballs.
     dontUnpack = true;
     dontConfigure = true;
     dontBuild = true;
     installPhase = ''
       runHook preInstall
       mkdir -p $out/v${version}/${platform.extension}
-      gunzip -c $src > $out/v${version}/${platform.extension}/ducklake.duckdb_extension
+      gunzip -c ${builtins.elemAt extensionSources 0} > $out/v${version}/${platform.extension}/ducklake.duckdb_extension
+      gunzip -c ${builtins.elemAt extensionSources 1} > $out/v${version}/${platform.extension}/postgres_scanner.duckdb_extension
       runHook postInstall
     '';
   };

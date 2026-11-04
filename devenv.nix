@@ -51,10 +51,14 @@ in
     # DuckLake catalogs live under the project, not in $HOME.
     FD_CATALOG_ROOT = "${config.devenv.root}/.scratch/catalogs";
     # What the Rust connector's integration tests need in order to run instead
-    # of skip: the shared library it `dlopen`s and the signed 2.0.0 extension.
-    # `LOAD` reads the extension straight out of the (read-only) store
-    # directory — verified: DuckDB writes `.info` files only on `INSTALL` — so
-    # no writable copy is needed.
+    # of skip: the shared library it `dlopen`s and the signed 2.0.0 extensions.
+    # `LOAD` reads them straight out of the (read-only) store directory, so no
+    # writable copy is needed — but *only* for extensions that are present
+    # there.  An extension DuckDB has to autoload and cannot find (measured:
+    # `postgres_scanner`, autoloaded by `ATTACH 'ducklake:postgres:…'`) is
+    # `INSTALL`ed into the extension directory, which fails on a store path with
+    # `Permission denied` while writing its `.tmp-<uuid>` file.  Hence both
+    # extensions are vendored by `nix/ducklake-2.0.nix`.
     DUCKLAKE_DUCKDB_LIB = "${ducklake.libduckdb}/lib/${ducklake.library}";
     DUCKLAKE_EXTENSION_DIR = "${ducklake.extension}";
   };
