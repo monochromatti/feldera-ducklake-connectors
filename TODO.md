@@ -1019,3 +1019,100 @@ plus `bootstrap_reads_the_table_once_and_records_its_snapshot` and
 
 **Open objectives:** the pipeline-level verification in §13.4 (reader command protocol,
 checkpoint resume, `feldera-up` end-to-end), not started (m00001 §3, m01088).
+
+---
+
+## 14. Stage D result (engine tests)
+
+Date: 2026-11-05. Commits: feldera `73c833d` (compile the connectors into the suite),
+`275bb5a` (register the module), `a23d732` (the suite and the fixes it found).
+**Both cases pass**: `2 passed; 0 failed … finished in 5.49s`, alongside 24 library tests.
+
+### 14.1 How the suite is run (this is not obvious, and a session will otherwise report "no tests")
+
+`#[engine_test]` does **not** generate a `#[test]`. It submits an entry to
+`inventory`, and only `static-connectors::test::StaticTestEngine` collects them. So:
+
+- `cargo test -p dbsp_connectors …` compiles and runs the library tests but **silently runs
+  zero engine tests**. That is the trap: no error, no skip line, just nothing.
+- The suite is run as `cargo test -p static-connectors --test connector_suites -- ducklake`.
+  `crates/static-connectors/tests/connector_suites.rs` is one line:
+  `dbsp_connectors::test::run_suites(static_connectors::test::StaticTestEngine)`.
+- `dbsp_connectors` must build with `--features controller-tests`… it has no such feature;
+  the harness lives behind `cfg(test)`, so the runnable command above is the only one that
+  matters.
+
+Working invocation (macOS, nix shell, from `~/Code/feldera`):
+
+```bash
+nix shell nixpkgs#rdkafka nixpkgs#pkg-config nixpkgs#openssl nixpkgs#zstd --command bash -c '
+  export PKG_CONFIG_PATH=$(for d in $(echo "$PATH" | tr : "\n"); do p=$(dirname "$d")/lib/pkgconfig; [ -d "$p" ] && echo "$p"; done | tr "\n" ":")
+  export LIBRARY_PATH=$(for d in $(echo "$PATH" | tr : "\n"); do p=$(dirname "$d")/lib; [ -d "$p" ] && echo "$p"; done | tr "\n" ":")
+  export DUCKLAKE_DUCKDB_LIB=/nix/store/f24jslbwxkwp4klh5p75h0pk5bnjhfkb-libduckdb-2.0.0/lib/libduckdb.dylib
+  export DUCKLAKE_EXTENSION_DIR=/nix/store/ik5fal2kmpkr85m395f3hmq91kk3yly6-ducklake-extension-2.0.0
+  ~/.cargo/bin/cargo test -p static-connectors --test connector_suites -- ducklake'
+```
+
+Two build facts cost time this session:
+
+- **Disk.** A full-feature debug build with default debug info kept **60 GB** in
+  `target/debug/deps` and filled the disk; the linker then failed with
+  `No space left on device` and no amount of `rm` in `/tmp` helped. `CARGO_INCREMENTAL=0
+  CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0` is the right default on this machine
+  unless a backtrace is wanted.
+- **Native deps.** Without the nix shell, `rdkafka-sys` fails in its build script; every
+  build and test command needs it, including `cargo build --tests`.
+
+### 14.2 What the suite asserts, and what it deliberately does not
+
+- `ducklake_output_publishes_the_step_it_committed`: identity circuit, DuckLake sink, two
+  rows; after `stop()` the catalog is reattached and both rows must be present.
+- `ducklake_input_bootstraps_and_then_follows`: DuckLake source → JSON file; the bootstrap
+  snapshot must arrive, then a commit made *while the pipeline runs* must arrive as changes.
+- **The step number is not asserted.** My first version asserted `frontier == 1` and failed:
+  the step the rows land in depends on how many steps the controller took first. The suite
+  asserts `frontier >= 1` ("a step was recorded") and leaves exact bookkeeping to the
+  protocol tests, which control the step. Weakening this was not a loss: the guard-row
+  semantics are covered where they can be controlled.
+
+### 14.3 Three reader bugs the suite found (none were visible to the loop test)
+
+1. **No step was ever requested.** The reader wrote rows into its stream and waited, but
+   nothing tells the controller that the endpoint has news; the `clock` connector calls
+   `consumer.request_step()` on every tick that produces something. Without it the rows sat
+   buffered and the pipeline never stepped.
+2. **The poll was gated on `Extend`.** The controller sends `Extend` only when it already
+   expects data, so after the first step the gate closed and the connector never polled
+   again — the pipeline hung on `Pause`-equivalent behaviour that nothing would undo.
+   `Pause` is now honoured where it matters: nothing is handed over except in answer to a
+   `Queue`.
+3. **`Queue` was answered only when the buffer was non-empty**, which deadlocks a step on a
+   quiet catalog. It is now always answered (flush, then `extended`), even with 0 records.
+
+The loop test could not have caught (2) or (3): it re-sends `Queue` until rows arrive, which
+a real controller never does. That is the argument for this stage existing at all.
+
+### 14.4 A wiring fact worth keeping
+
+An **integrated output endpoint never receives `connect`**: the controller creates it with
+`create_integrated_output_endpoint` and immediately takes `into_encoder`, so the object that
+runs the steps has had no connection attempt. Setup therefore happens on first use
+(`ensure_connected` in `writer.rs`); `connect` calls the same idempotent function for any
+caller that does call it.
+
+### 14.5 Not done
+
+- **PostgreSQL-backed catalog under two engines.** Both cases use a file-backed catalog
+  (single-process). §9.3 measured that a PostgreSQL catalog is the only way to run a reader
+  and a writer concurrently, and that has not been exercised natively.
+- **One pipeline with both connectors** (read catalog A, write catalog B). Each is tested
+  against the engine separately.
+- **The 18 protocol scenarios have no 1:1 Rust counterparts.** The library tests cover the
+  same behaviours (24 tests) but are not named after `scenarios.py`, and the two that need
+  *two concurrent engines* (`guard/divergent-payload-for-committed-identity-is-detected`,
+  `ducklake/concurrent-publishers-converge-to-one-outcome`) are still approximated by two
+  cursors in one process.
+- **Stage E (docs)** — the Feldera docs pages and the schema contract — not started.
+
+**Open objectives:** PostgreSQL-catalog two-engine test, the reader+writer pipeline, the
+18-scenario parity audit, and Stage E docs (m00001 §3, m01222).
