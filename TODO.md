@@ -1283,12 +1283,22 @@ Two environment facts found while writing it, both worth knowing outside the tes
   `1.5.2` — newer than `1.5` and older than `2.0` — and loading a `2.0.0` extension into it
   fails in a way that reads like a connector bug. The case checks `--version` for `v2.0.0` and
   skips otherwise (`DUCKLAKE_DUCKDB_CLI`).
-- **`extension_directory` must be writable whenever the catalog needs a second extension.** A
-  PostgreSQL catalog makes DuckLake load `postgres_scanner`, and DuckDB `INSTALL`s it into
-  `extension_directory`. A read-only vendored directory (a Nix store path) fails with
-  `Cannot open file "…/postgres_scanner.duckdb_extension.tmp-…": Permission denied`. The tests
-  copy the vendored directory into a temp directory for exactly this reason, and the docs now
-  say so.
+- **`extension_directory` must be writable only if DuckDB has to install something.** A
+  PostgreSQL catalog makes DuckLake load `postgres_scanner`, and DuckDB `INSTALL`s a missing
+  extension into `extension_directory`. A read-only vendored directory that lacks it (a Nix
+  store path) fails with `Cannot open file "…/postgres_scanner.duckdb_extension.tmp-…":
+  Permission denied`. **Corrected:** once `404b738` vendored `postgres_scanner` beside
+  `ducklake`, the read-only store path works as is — verified by `nix build` of the derivation
+  (`/nix/store/70w7q91…-ducklake-extension-2.0.0`, containing both) and a `ducklake:postgres:`
+  `ATTACH` through the CLI, then by running the two PostgreSQL engine cases against that path
+  with no copy. So the rule is "it must *contain* every extension the catalog needs, or be
+  writable so DuckDB can install the missing one", which is what the docs now say, and the test
+  helper uses the vendored directory as is whenever it holds `postgres_scanner`.
+- **`extension_directory` is deprecated in DuckDB 2.0.0** (warned on first use:
+  `The 'extension_directory' setting is deprecated and will be removed in a future release`).
+  It still works, and it is the only way to point DuckDB at an offline extension, so the
+  connector keeps it — but a future DuckDB will need a different mechanism, and that is worth
+  knowing before someone pins a newer extension.
 
 ### 17.4 State
 
