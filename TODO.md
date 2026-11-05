@@ -1218,5 +1218,86 @@ Re-run both ways to confirm — `3 passed` with the server absent (skip announce
   `guard_table` = `connector_guard`, `alias` = `dl`, `poll_interval` = `1s`,
   `send_snapshot` = `true`); the OpenAPI round-trip test covers the shapes, not the prose.
 
-**Open objectives:** the 18-scenario parity audit against `scenarios.py`, a single pipeline
-with both connectors, and the two-process pipeline-manager run (m00001 §3, m01222).
+## 17. Verification gaps closed
+
+Three gaps were left open at the end of §16. All three are closed, by tests rather than by
+prose. The tests live in `crates/connectors/src/integrated/ducklake/{protocol,catalog,tests_live,test}.rs`.
+
+### 17.1 The 18 scenarios, mapped
+
+`src/fd_connectors/scenarios.py` names 18 protocol requirements. Auditing the Rust suite
+against them by name found six with no counterpart at the level the scenario tests, and one
+whole requirement (`protocol/decision-is-total`) that no Rust test covered at all. All are now
+mapped; the ones added in this pass are marked **new**.
+
+| `scenarios.py` | Rust |
+|---|---|
+| `guard/apply-advances-frontier` | `protocol::a_batch_on_top_of_the_frontier_applies`, `protocol::advancing_records_the_identity_and_the_digest`, `tests_live::a_published_step_and_a_replayed_step_leave_one_copy_of_its_rows` |
+| `guard/duplicate-retry-is-a-no-op` | `protocol::replaying_the_committed_batch_is_a_duplicate_not_a_second_apply`, `tests_live::publishing_the_same_batch_twice_applies_it_once` |
+| `guard/stale-publisher-is-refused` | `protocol::an_overtaken_interval_is_stale_even_with_an_older_base`, `protocol::a_batch_whose_base_is_not_the_frontier_is_stale` |
+| `guard/foreign-generation-is-refused` | `protocol::another_generation_is_refused_outright` |
+| `guard/ownership-requires-explicit-takeover` | `protocol::taking_over_requires_a_strictly_greater_epoch`, `protocol::a_fenced_writer_is_refused_even_with_a_higher_epoch` |
+| `guard/divergent-payload-for-committed-identity-is-detected` | `protocol::the_same_identity_with_different_content_stops_the_writer`, **new** `tests_live::a_divergent_payload_for_a_committed_identity_is_refused` |
+| `ducklake/payload-and-guard-are-atomic-on-payload-failure` | **new** `tests_live::a_payload_failure_leaves_the_guard_and_the_history_where_they_were` |
+| `ducklake/reader-sees-payload-and-guard-together` | same test — see the deviation below |
+| `ducklake/rollback-leaves-history-replayable` | same test: the frontier **and** the committed snapshot are unchanged |
+| `ducklake/resync-replaces-content-and-is-idempotent` | **new** `tests_live::a_resync_replaces_the_content_and_replays_as_a_duplicate` |
+| `ducklake/keyed-update-is-delete-then-insert` | **new** `tests_live::a_keyed_update_leaves_the_post_image` |
+| `ducklake/multiset-delete-removes-one-copy` | **new** `tests_live::a_multiset_delete_removes_one_copy` |
+| `ducklake/concurrent-publishers-converge-to-one-outcome` | `test::two_engines_publishing_the_same_step_converge_on_one_outcome` |
+| `source/guard-update-is-conditional` | the conditional `UPDATE` in `Catalog::update_guard`, plus the two-engine case |
+| `source/change-interval-is-not-replayed` | `tests_live::a_new_snapshot_is_replayed_with_its_change_types`, the loop test |
+| `source/identity-is-the-interval-not-the-digest` | `tests_live::the_loop_bootstraps_once_and_replays_from_the_checkpoint_it_reported` |
+| `protocol/decision-is-total` | **new** `protocol::the_decision_is_total` — a sweep over 5 × 4 × 5 × 2 × 3 guard/batch combinations |
+| `report/lost-update-counterexample` | `test::two_engines_publishing_the_same_step_converge_on_one_outcome` |
+
+**One deliberate deviation.** `ducklake/reader-sees-payload-and-guard-together` proves
+isolation with two cursors on one connection: a reader inside an open transaction sees neither
+the payload nor the guard, then sees both after `COMMIT`. The Rust connector cannot be tested
+that way — its reader and writer are separate DuckDB instances, and a file catalog admits one
+attachment — so the requirement is tested where it can actually fail here: a publication
+advances `ducklake_current_snapshot()` by exactly one, so the payload and the guard row are in
+one snapshot and no reader can observe one without the other. What the Python scenario proves
+about DuckDB's isolation is DuckDB's to guarantee; what the Rust test proves about the
+connector is the connector's.
+
+### 17.2 One pipeline, both connectors
+
+`test::ducklake_to_ducklake_copies_a_table_into_another` runs a DuckLake source and a
+DuckLake sink in one pipeline and asserts the sink table holds what the source table held.
+Two catalogs, not one: a **file**-backed catalog admits one attachment, so a reader and a
+writer of the same file catalog fence each other off. The same-catalog case is the PostgreSQL
+two-engine case above.
+
+### 17.3 A commit from another process
+
+`test::ducklake_input_follows_a_commit_from_another_process` runs the `duckdb` CLI as a
+genuine second process and expects the pipeline to follow its commit. This is the deployment
+shape every other case fakes, and it is only reachable with the CLI: the reader re-attaches on
+every poll precisely because an attachment it opened earlier never sees another process's
+commit (`reader.rs`, `refresh`).
+
+Two environment facts found while writing it, both worth knowing outside the tests:
+
+- **The `duckdb` CLI must match the vendored extension's version.** `PATH` here offers
+  `1.5.2` — newer than `1.5` and older than `2.0` — and loading a `2.0.0` extension into it
+  fails in a way that reads like a connector bug. The case checks `--version` for `v2.0.0` and
+  skips otherwise (`DUCKLAKE_DUCKDB_CLI`).
+- **`extension_directory` must be writable whenever the catalog needs a second extension.** A
+  PostgreSQL catalog makes DuckLake load `postgres_scanner`, and DuckDB `INSTALL`s it into
+  `extension_directory`. A read-only vendored directory (a Nix store path) fails with
+  `Cannot open file "…/postgres_scanner.duckdb_extension.tmp-…": Permission denied`. The tests
+  copy the vendored directory into a temp directory for exactly this reason, and the docs now
+  say so.
+
+### 17.4 State
+
+`cargo test -p dbsp_connectors --lib ducklake` → 30 passed (24 before this pass).
+`cargo test -p static-connectors --test connector_suites -- ducklake` → 5 passed, with
+PostgreSQL 17 running on `127.0.0.1:5432` and `DUCKLAKE_DUCKDB_CLI` pointing at DuckDB 2.0.0.
+Without PostgreSQL two of the five skip themselves and say so; without the CLI a third does.
+
+**Open objectives:** none from `TODO.md` §3. What remains unverified is stated where it lives:
+the docs site was never built (§16), and no test drives `pipeline-manager` over HTTP — the
+cross-process case above is the closest thing, and it is a better probe of the connector
+because it does not also test the REST API.
