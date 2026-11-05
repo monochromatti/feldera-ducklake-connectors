@@ -1330,3 +1330,41 @@ Without PostgreSQL two of the five skip themselves and say so; without the CLI a
 the docs site was never built (§16), and no test drives `pipeline-manager` over HTTP — the
 cross-process case above is the closest thing, and it is a better probe of the connector
 because it does not also test the REST API.
+
+## 18. Parity review: Rust writer vs `protocol.py`
+
+A read-only review compared the Rust writer against the Python bridge the protocol was defined
+by, and found four places where they disagree in the direction that loses rows. All four are
+fixed and pushed to `fork/ducklake-connector` as `d006e71`.
+
+| Divergence | Python | Rust (before) | Consequence |
+|---|---|---|---|
+| A resync's scope | deletes the tables the batch carries, in one atomic group-wide commit | deleted **every configured table** | endpoint B's resync wiped the rows endpoint A had just published, with both guards advancing past them |
+| A failed `encode` on a snapshot | raises; nothing is written | left `pending.resync` set with no rows, so `batch_end` published an empty resync | the table was emptied and the guard advanced over the hole |
+| A keyed delete | `= ?` (same bug) | `= ?`, no row limit | a NULL key matched nothing while the insert added a copy ⇒ unbounded growth on every republish; and a single delete removed *all* rows with that key |
+| `records_written` | tracks frontier and applied rows separately | stored the **frontier** in the record counter | the endpoint's record metric reported a transaction number |
+
+Both implementations share the keyed-delete defect, so it is not a porting error — it is a
+protocol error that the reference has too. The Rust side now uses `IS NOT DISTINCT FROM ?`
+limited to one row, matching what both sides already did for non-keyed tables.
+
+Three further findings are engine-side or inherent, and are recorded rather than fixed (also in
+the commissioning doc's "Known limits"):
+
+- **An `encode` error still leaves the step uncounted only if the connector holds.** The
+  controller treats an encoder error as non-fatal and calls `batch_end` regardless, so a
+  connector that merely returns loses the step. Holding is the only place it can be stopped.
+- **The engine never delivers an empty snapshot** (`controller.rs` skips `data: None`), so a
+  restart against a non-empty table with an empty view keeps stale rows forever.
+- **`is_fault_tolerant()`'s premise is unverified.** It is currently inert (no call site outside
+  the connectors), and its at-least-once reasoning only holds for replays at or above the
+  frontier.
+
+### 18.1 The interop claim, narrowed
+
+`protocol.rs` claimed the vocabulary is shared "so that a catalog written by one is read by the
+other", and that the frontier is a DBSP transaction id stable across restarts. The second half is
+an assumption about which counter the engine passes to an output endpoint, and the first depends
+on it: if they differ, the guard classifies every step of an inherited catalog as stale and holds.
+`76eb97d` states this as an open question and keeps the identity check, which is what still
+recognises a replay if the counters do not line up.
