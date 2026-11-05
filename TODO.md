@@ -909,8 +909,9 @@ of range (178028860 max is +/-128MB)` from a `ctor` object). Overriding the link
   read-only mode!`). So a read-only reader is expressible — but §9.3 still applies: with a
   *file* catalog a second process cannot attach at all, so concurrency needs PostgreSQL.
 - **`extension_directory` is deprecated in 2.0** (`The 'extension_directory' setting is
-  deprecated and will be removed in a future release`) but still honoured. The connector
-  keeps it for now; the config field is the only way to pin the extension offline.
+  deprecated and will be removed in a future release`) but still honoured. Its replacement is
+  `extension_directories`, a *list*; see the note in §17.3. The connector's own config field
+  keeps its name — it is the connector's vocabulary, not DuckDB's.
 
 **Open objectives:** Stage C (reader: snapshot bootstrap, `ducklake_table_changes` polling
 over `(applied, current]`, `InputConsumer` output, the new-vs-initially-present identity
@@ -1296,9 +1297,27 @@ Two environment facts found while writing it, both worth knowing outside the tes
   helper uses the vendored directory as is whenever it holds `postgres_scanner`.
 - **`extension_directory` is deprecated in DuckDB 2.0.0** (warned on first use:
   `The 'extension_directory' setting is deprecated and will be removed in a future release`).
-  It still works, and it is the only way to point DuckDB at an offline extension, so the
-  connector keeps it — but a future DuckDB will need a different mechanism, and that is worth
-  knowing before someone pins a newer extension.
+  Its replacement is `extension_directories`, which is a **list** — `SET
+  extension_directories = ['/vendored/ext']` — and setting it *replaces* the default
+  `~/.duckdb/extensions` search path rather than adding to it. Measured: the singular key is no
+  longer listed in `duckdb_settings()` at all, `duckdb_set_config(config,
+  "extension_directories", "/some/dir")` **fails** (a bare path cannot cast to `VARCHAR[]`)
+  while `duckdb_open_ext` still succeeds — a silently dropped setting — and with the list form
+  a missing extension is `INSTALL`ed into its first entry, so the "must contain every extension
+  or be writable" rule of §17.3 is unchanged. The connector therefore sets the list form and
+  falls back to the deprecated key only if it is refused (no version sniffing), which keeps the
+  offline guarantee on any 2.x.
+- **A DuckLake attachment only sees the snapshot it attached with.** Measured with two
+  attachments in one process: after `B` inserts rows into a table `A` created, `A` still reads
+  0, and a table that `B` creates never appears in `A` at all, while a *fresh* attachment sees
+  everything. The change-feed functions do see later commits (the reader's "another process
+  commits" case passes on a long-lived attachment), so this is specific to reading table
+  contents. Consequence for the engine tests: a poll for published output must **re-attach**
+  each iteration instead of reading through one attachment — polling a long-lived one waited
+  the full 60 s and looked exactly like a connector that never publishes. Consequence for the
+  writer: none, because `update_guard` re-reads the guard row *inside* the transaction and
+  requires it to equal the batch's step, so a stale read can only cause a bail-out and a
+  retry, never a duplicate commit.
 
 ### 17.4 State
 
