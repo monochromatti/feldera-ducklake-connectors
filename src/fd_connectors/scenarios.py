@@ -23,7 +23,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .catalog import DuckLake
+from .catalog import DuckLake, HistoryExpiredError
+from .feldera import FelderaClient
+from .input_connector import InputConnector, InputSpec
+from .journal import Checkpoint, Journal
 from .protocol import (
     Batch,
     Decision,
@@ -602,6 +605,43 @@ def change_interval_is_not_replayed(root: Path) -> str:
         f"interval ({checkpoint}, {current}] replays exactly {sorted(after - before)} "
         f"without re-emitting snapshot {checkpoint}"
     )
+
+
+@scenario("source/catalog-rewind-is-refused")
+def catalog_rewind_is_refused(root: Path) -> str:
+    """A catalog behind the checkpoint must stop the connector, not idle.
+
+    A DuckLake catalog can move backwards — restored from a backup, rebuilt, or
+    replaced by a fresh file whose snapshot counter starts again.  ``poll_once``
+    folded that into its "no news" branch (``end <= checkpoint.source_snapshot``),
+    so the pipeline polled forever looking healthy while never emitting anything,
+    and the moment the catalog caught up the interval would have been a diff
+    against a history this connector never read.  The Rust reader refuses the same
+    condition.
+    """
+    lake = make_lake(root)
+    lake.execute(f"INSERT INTO {lake.qualified('orders')} VALUES (1, 'a', 10.0)")
+    ahead = lake.last_committed_snapshot() + 5
+
+    state_dir = root / "state"
+    journal = Journal(state_dir / "orders")
+    journal.save_checkpoint(Checkpoint(source_snapshot=ahead, feldera_step=1, seq=0))
+
+    spec = InputSpec(source_table="orders", feldera_table="orders")
+    connector = InputConnector(
+        lake,
+        FelderaClient("http://127.0.0.1:1"),  # never contacted: the poll refuses first
+        pipeline="p",
+        generation="gen-1",
+        specs=[spec],
+        state_dir=state_dir,
+    )
+    try:
+        connector.poll_once()
+    except HistoryExpiredError as error:
+        assert "went backwards" in str(error), error
+        return f"a checkpoint at snapshot {ahead} against a catalog at {ahead - 5} is refused, not idled"
+    raise AssertionError("a catalog behind the checkpoint was followed instead of refused")
 
 
 @scenario("source/identity-is-the-interval-not-the-digest")

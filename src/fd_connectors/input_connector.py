@@ -251,7 +251,20 @@ class InputConnector:
                 self.bootstrap(spec)
                 continue
             end = self.lake.last_committed_snapshot()
-            if end <= checkpoint.source_snapshot:
+            if end < checkpoint.source_snapshot:
+                # The catalog is behind the checkpoint: it was restored or rebuilt
+                # under a history this connector never saw.  Treating it as "no
+                # news" (the old `end <= ...` branch) left the pipeline polling
+                # forever while looking healthy, and any later interval would be a
+                # diff against snapshots that no longer mean what they did.  The
+                # Rust reader refuses the same way.
+                raise HistoryExpiredError(
+                    f"{spec.source_table}: the catalog is at snapshot {end} but this pipeline "
+                    f"had followed it to {checkpoint.source_snapshot}; the catalog went "
+                    "backwards. Restore the catalog or recreate the pipeline with a new "
+                    "generation and bootstrap again."
+                )
+            if end == checkpoint.source_snapshot:
                 continue
             changes = self.lake.table_changes(
                 spec.source_table,

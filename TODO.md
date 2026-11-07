@@ -110,7 +110,7 @@ tightly coupled.
 
 The value of the existing work is a *validated protocol*; the Rust port is a
 re-implementation of its transport, not a redesign. These invariants are proved in
-`formal/Connectors.lean` and exercised by 20 scenarios. Breaking any of them silently
+`formal/Connectors.lean` and exercised by 21 scenarios. Breaking any of them silently
 destroys the reason this exists.
 
 ### 1.1 The atomic commit (the core contract)
@@ -259,7 +259,7 @@ half that can be tested without a second system.
 | `src/fd_connectors/input_connector.py` | 315 | Stage C endpoint | bootstrap vs incremental; `check_history`; completion-token discipline |
 | `src/fd_connectors/journal.py` | 216 | engine checkpoints (S3) | atomicity of the journal write; "uncertain" must fail closed, not guess |
 | `src/fd_connectors/feldera.py` | 457 | **delete** — the REST client is what native replaces | ingress/egress REST calls disappear entirely |
-| `src/fd_connectors/scenarios.py` | 704 | Rust analogues of all 20 scenarios | see §5 |
+| `src/fd_connectors/scenarios.py` | 704 | Rust analogues of all 21 scenarios | see §5 |
 | `src/fd_connectors/cli.py` | 202 | optional debug tool | — |
 
 `tests/test_wire_format.py` (103 lines) holds a **verbatim capture of the live v0.374.0
@@ -274,7 +274,7 @@ egress wire format** — it is the ground truth for the `Encoder`. Do not re-der
 **The existing Python harness cannot validate the Rust connector.** `scenarios.py` drives
 `src/fd_connectors/` directly, whereas a native connector is exercised through a pipeline
 that declares `WITH ('connectors' = '[{"transport": {"name": "ducklake", ...}}]')`.
-So "port the 20 scenarios" does **not** mean running `fd-scenarios` against Rust.
+So "port the 21 scenarios" does **not** mean running `fd-scenarios` against Rust.
 
 Three layers, increasing in cost:
 
@@ -1248,6 +1248,8 @@ mapped; the ones added in this pass are marked **new**.
 | `ducklake/resync-replaces-content-and-is-idempotent` | **new** `tests_live::a_resync_replaces_the_content_and_replays_as_a_duplicate`
 | `guard/resync-clears-only-the-tables-it-repopulates` | `tests_live::a_resync_clears_only_its_own_group` (the scenario is the Python half of the same rule; the Rust `Catalog::publish` `tables` argument is what it mirrors) |
 | `guard/keyed-replacement-matches-a-null-key` | `tests_live::a_null_key_part_is_matched_not_skipped` — reverting the Rust `IS NOT DISTINCT FROM` to `=` makes it report two rows for one key |
+| `source/catalog-rewind-is-refused` | `tests_live::a_catalog_that_went_backwards_is_refused` |
+| — (checkpoint parse) | `tests_live::a_checkpoint_that_does_not_parse_is_refused` — the reference reads its own checkpoint strictly (`KeyError`) too, so there is no scenario to pair with this one |
 | `ducklake/keyed-update-is-delete-then-insert` | **new** `tests_live::a_keyed_update_leaves_the_post_image` |
 | `ducklake/multiset-delete-removes-one-copy` | **new** `tests_live::a_multiset_delete_removes_one_copy` |
 | `ducklake/concurrent-publishers-converge-to-one-outcome` | `test::two_engines_publishing_the_same_step_converge_on_one_outcome` |
@@ -1488,3 +1490,45 @@ Its #2 and #4 are refused, and the refusal is the interesting part:
 Method note for whoever dispatches the next one: the review budget is consumed by *searching* an
 830-test crate, not by reading. Give one file and one question per run, and tell it to write
 findings to a file as it goes — the run that did that is the only one whose work survived.
+
+### 17.9 The reader review: two silent-duplication defects, one measurement
+
+The reader was reviewed last, and it was where the most dangerous defect lived.
+
+- **A checkpoint that did not parse became a fresh bootstrap.** `ReaderState::from_metadata`
+  discarded the serde error with `.ok()` and returned `Default`, whose `bootstrapped: false`
+  means "never bootstrapped" — so an unreadable checkpoint re-read the whole table and re-emitted
+  every row as `+1` on top of what the collection still held. `COUNT` and `SUM` inflate, and
+  nothing anywhere reports a problem. Now the parse error is fatal, which is also what
+  `journal.Checkpoint.from_json` does in the reference (`KeyError`, not a guess).
+- **A catalog that went backwards was read as "no news".** `current <= state.snapshot` returned
+  `(state, 0)`, so a checkpoint ahead of a restored or rebuilt catalog polled forever while the
+  pipeline looked healthy — and had the catalog caught up, the interval would have been a diff
+  against history this reader never saw. Both implementations now refuse
+  (`source/catalog-rewind-is-refused`, `a_catalog_that_went_backwards_is_refused`).
+- **Polarity was decided twice.** `push` mapped `change_type` to a weight and the sink matched the
+  same strings again with everything unrecognised falling into `delete` — two lists agreeing by
+  luck, where a fifth DuckLake change type would have gone out as `-1` silently. `push` now
+  derives the polarity once and hands the sink `(change_type, is_insert, json)`; the label is kept
+  because it is what the change-type test asserts.
+
+And one claim that turned out to be fine, so it is now pinned by measurement rather than argument:
+the bootstrap's "the snapshot number and the rows come from one snapshot" holds for a **PostgreSQL**
+catalog too, where DuckDB's transaction does not enlist the extension's own metadata connection.
+Measured: inside one `BEGIN`, `ducklake_current_snapshot('dl')` returned 26 before and after a
+concurrent two-row commit, and the scan returned 1 row both times while a fresh connection saw 3.
+The snapshot is pinned per transaction, not per statement, so the reasoning in `reader.rs`'s module
+docstring is sound for both backends.
+
+Two things the review listed that are **not** defects and are not going to be "fixed":
+
+- **Every error fails the pipeline; there is no retry.** State only advances on the `Ok` path, so a
+  failure never skips rows — it stops the endpoint, which is what the protocol wants. A retry would
+  have to `truncate` the record count it pushed before the failure, and must not be gated on
+  `refresh` succeeding (a writer holding the catalog would make the reader spin); it would also make
+  the error text matching in `refresh` load-bearing, which is version-fragile. Not worth it until
+  something asks for it.
+- **`MAX_BUFFERED` is a bound on unread commits, not on memory.** The bootstrap materialises the
+  whole table and one window is materialised whole by the FFI call. Chunking either needs a cursor
+  inside a snapshot that DuckLake does not offer; re-reading a window from its start is worse than
+  the memory. The constant's comment now says this instead of implying a memory bound.
