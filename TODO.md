@@ -1532,3 +1532,48 @@ Two things the review listed that are **not** defects and are not going to be "f
   whole table and one window is materialised whole by the FFI call. Chunking either needs a cursor
   inside a snapshot that DuckLake does not offer; re-reading a window from its start is worse than
   the memory. The constant's comment now says this instead of implying a memory bound.
+
+### 17.10 The interface review: five defects, and two things left alone
+
+The fifth review read the engine-facing surface rather than the protocol. Findings, with what was
+done:
+
+- **`ReaderCatalog` declared `db` before `conn`**, so `duckdb_close` ran while a connection was
+  open and `duckdb_disconnect` then ran on a closed handle — on every re-attach, i.e. every
+  checkpoint restore. `Catalog` has the opposite order with a comment saying why; `ReaderCatalog`
+  had the order and a comment asserting the opposite. Swapped.
+- **`qualified_name` re-quoted an already-quoted alias**, so `quote_ident` always failed and the
+  `unwrap_or_else` fallback was the normal path — which put `schema` and `table` straight from the
+  pipeline configuration into SQL **unvalidated and unquoted**. `table = "x FROM y --"` is
+  injection; the doc comment above it claimed the opposite. Now the alias is used as stored,
+  `quote_ident` errors propagate, and both names are validated when the reader opens.
+- **A failed publication never reached the controller.** Integrated endpoints are never handed
+  `connect`, so `callbacks` stayed `None` and `fail_and_hold` was a log line plus a thread that
+  held forever; the error returned at shutdown is downgraded to `debug!`. The writer already held
+  `Weak<ControllerInner>` with `#[allow(dead_code)]` on it. It now calls
+  `output_transport_error(.., fatal = true, ..)`, the same way `OutputProbe` does.
+- **The ATTACH string was logged at INFO**, and echoed in error contexts that reach the pipeline
+  status API — with any `password=` in it. `catalog::redact_catalog` now wraps every site, with a
+  test covering the quoted-connection-string form.
+- **`resolve_target()` ran on the first step**, so a `tables` mapping that names no view (or two)
+  stalled the output thread instead of failing pipeline creation. Moved into `new()`; the
+  ambiguity test moved with it rather than dropping the expectation.
+- Also: `push_buffer`/`push_key` panicked where the trait contract asks for an error (the
+  `as_endpoint()` path can reach them); `is_closed`'s comment claimed the reader reported its error
+  before closing, and the field order guaranteed the opposite — the receiver now outlives
+  `consumer.error`; the module note still described the reader as a skeleton.
+
+**Left alone, deliberately:**
+
+- `InputReader::take_completion` is still `None`, so shutdown waits at most 5 s for the worker and
+  a worker inside a long query can outlive `Drop` holding its stream. Safe (the `Library` is a
+  process-wide `OnceLock`) but correlated with `poll_interval` cost at teardown.
+- `send_snapshot` cannot be protected from a typo: the catalog block is `#[serde(flatten)]`ed and
+  `deny_unknown_fields` cannot be combined with `flatten`, so `send_snapshott: false` keeps the
+  default `true` and the deployment gets the rewrite it asked not to have. Recorded in the field's
+  doc comment; the real fix is dropping `flatten` (a wire-schema refactor) or `serde_ignored` (a new
+  dependency).
+- `records_written` reports the last batch rather than a cumulative count, `is_fault_tolerant` is
+  read by nothing, and `refresh()` decides whether a `DETACH` failure is ignorable by matching
+  message text. All three are engine-shaped rather than protocol-shaped; the last is the one that
+  would bite first, if DuckDB reworded the error.
