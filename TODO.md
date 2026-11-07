@@ -1435,3 +1435,26 @@ an assumption about which counter the engine passes to an output endpoint, and t
 on it: if they differ, the guard classifies every step of an inherited catalog as stale and holds.
 `76eb97d` states this as an open question and keeps the identity check, which is what still
 recognises a replay if the counters do not line up.
+
+### 17.7 What the writer review did **not** cover
+
+Three attempts to get an independent review of the Rust writer's defect surface ran out their
+timeouts (two produced no file at all; one wrote incrementally and was cut off mid-read), so that
+axis has **no independent review**. What was checked, and how:
+
+- the delete path, the transaction boundary and the resync scope, read line by line against the
+  Python reference — this is what surfaced the two parity defects fixed in `0626dba`;
+- the multiset multiplicity case, pinned from both sides (`ducklake/multiset-delete-removes-one-
+  copy` / `tests_live::a_delete_removes_one_copy`), because that is the shape where a `DELETE`
+  without `LIMIT 1` turns a multiset into a set;
+- the NULL key part, now pinned by `tests_live::a_null_key_part_is_matched_not_skipped`, which
+  fails with two rows for one key when `IS NOT DISTINCT FROM` is reverted to `=`.
+
+Still unverified by anyone but me: `is_fault_tolerant()`'s premise (§17.5), and whether a batch
+whose deltas name *no* table should really fall back to "every configured table" — both writers
+do that, and a batch can only be empty after the engine coalesced a group to nothing, which no
+test constructs.
+
+Method note for whoever dispatches the next one: the review budget is consumed by *searching* an
+830-test crate, not by reading. Give one file and one question per run, and tell it to write
+findings to a file as it goes — the run that did that is the only one whose work survived.
