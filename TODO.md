@@ -1368,6 +1368,29 @@ One build note for the `--lib` target on darwin/arm64: the test binary is close 
 from `ctor`'s priority-constructor). `CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_TEST_OPT_LEVEL=1`
 links it; `--test connector_suites` is unaffected.
 
+### 17.6 What the review rounds changed
+
+Three read-only reviews ran against this state (test strength, residual writer defects, doc
+claims vs code). The kinds of finding they produce are worth recording, because each one was
+a claim that had been *written down* before it was checked:
+
+- **A test can pass while proving nothing.** The concurrency case accepted a retry count of
+  zero, and the resync case configured a single table per group — so widening the resync delete
+  to the configured set, the exact defect §17.4 guards against, would have left it green. Both
+  now assert the property, not its absence, and `MAX_ATTEMPTS` is `pub(super)` so the cases pass
+  the budget the writer actually uses.
+- **A scenario read through the writing connection.** `row_ids` used `DuckLake.connection`, so
+  "every scenario reads committed state through a second cursor" was false for 15 of 18. Fixed
+  in the code (`cursor()`, an independent transaction context) rather than in the sentence.
+- **Docs drift toward the flattering number.** Nine statements were false or stale — 33 tests
+  opening a catalog where 14 do, six e2e cases where one never contacts Feldera, a CLI gate
+  counted as a third skipping case when it is one of the two PostgreSQL ones, and a
+  `--version` check described as exact that compares only the major.
+
+The general lesson: the prose in this repository is load-bearing for a maintainer deciding
+whether to accept the patch, so a claim in README, TODO or `docs/design.md` is a test that
+nobody runs — until someone does.
+
 **Open objectives:** none from `TODO.md` §3. What remains unverified is stated where it lives:
 the docs site was never built (§16), and no test drives `pipeline-manager` over HTTP — the
 cross-process case above is the closest thing, and it is a better probe of the connector
