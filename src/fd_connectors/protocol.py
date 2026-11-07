@@ -32,8 +32,11 @@ Definitions used throughout:
 
 The decision function is deliberately total: every (guard, batch) pair maps to
 one of APPLY / DUPLICATE / STALE / WRONG_GENERATION / WRONG_OWNER, and the two
-order properties asserted in ``tests/test_protocol_properties.py`` are stated
-in over ``decide`` rather than derived from an executable model.
+order properties it relies on (a published interval is never applied twice, and
+an overtaken interval is refused) are the pointwise lemmas in
+``formal/Connectors.lean`` (``duplicate_is_noop``, ``wrong_generation_is_noop``,
+``stale_epoch_is_noop``), exercised here by the scenarios in
+:mod:`fd_connectors.scenarios` rather than derived from an executable model.
 """
 
 from __future__ import annotations

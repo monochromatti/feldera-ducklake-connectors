@@ -1339,7 +1339,7 @@ fixed and pushed to `fork/ducklake-connector` as `d006e71`.
 
 | Divergence | Python | Rust (before) | Consequence |
 |---|---|---|---|
-| A resync's scope | deletes the tables the batch carries, in one atomic group-wide commit | deleted **every configured table** | endpoint B's resync wiped the rows endpoint A had just published, with both guards advancing past them |
+| A resync's scope | deletes **every configured table** — sound there, because a group is assembled and committed as a whole, so its configured set *is* the batch's set | deleted **every configured table** too, but one endpoint commits alone, so its configured set is wider than what it writes | endpoint B's resync wiped the rows endpoint A had just published, with both guards advancing past them |
 | A failed `encode` on a snapshot | raises; nothing is written | left `pending.resync` set with no rows, so `batch_end` published an empty resync | the table was emptied and the guard advanced over the hole |
 | A keyed delete | `= ?` (same bug) | `= ?`, no row limit | a NULL key matched nothing while the insert added a copy ⇒ unbounded growth on every republish; and a single delete removed *all* rows with that key |
 | `records_written` | tracks frontier and applied rows separately | stored the **frontier** in the record counter | the endpoint's record metric reported a transaction number |

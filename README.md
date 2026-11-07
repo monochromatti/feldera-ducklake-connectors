@@ -114,7 +114,10 @@ the one already committed is reported as divergence instead of quietly winning.
 ## How it works
 
 For an output group — one or more views that must land together — the catalog
-holds exactly one **guard row**: `(output_group, generation, epoch, frontier)`.
+holds exactly one **guard row**: `(output_group, generation, epoch, frontier,
+batch_id, digest)`.  The first four decide *whether* a batch may be applied;
+the last two make a legitimate replay distinguishable from a republish of the
+same interval with different content.
 A batch carries `(generation, epoch, base, end, payload)` and is applied by a
 single transaction that:
 
