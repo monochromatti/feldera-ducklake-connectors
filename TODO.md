@@ -1455,6 +1455,36 @@ whose deltas name *no* table should really fall back to "every configured table"
 do that, and a batch can only be empty after the engine coalesced a group to nothing, which no
 test constructs.
 
+### 17.8 The one report that survived, and why two of its five findings are refused
+
+A fourth dispatch finished (the only one to do so) and ranked five defects. Its #1 (`encode`
+returning `Ok(())` after a refused publication), #3 (`db` declared before `conn`, inverting the
+drop order its own comment requires) and #5 (`self.pending.deltas = deltas` instead of `extend`)
+are **already fixed in `f63e679`** — the run was reading the writer as it stood before that
+commit, which is why its line numbers end at 644 where the file now has 679. Two independent
+reviews finding the same three defects is worth more than either alone, and it is the strongest
+evidence so far that `f63e679` fixed the right things.
+
+Its #2 and #4 are refused, and the refusal is the interesting part:
+
+- **#4, "`batch.base` is frozen across retries, turning a conflict into `Stale`."** That is the
+  protocol, not a bug. `base` is the frontier the deltas were computed against; recomputing it
+  after a conflict would apply deltas against a content they were not computed from — the
+  corruption the guard exists to prevent. A moved frontier *is* `Stale`, and `Stale` is a hold
+  with a message that says how to recover (`send_snapshot`). The retry loop's useful case is the
+  one where the frontier did not move, i.e. the conflict came from the catalog's own optimistic
+  concurrency, not from a competing publication.
+- **#2, "a resync with `end < frontier` is `Apply`, and `advance` writes `frontier = batch.end`,
+  regressing the guard."** Mechanically true (`update_guard`'s `AND frontier = ?` compares against
+  the guard it just read, so it accepts a lower value; the post-check only compares with
+  `batch.end`), and still correct: a resync is a *snapshot replacement* — it clears the endpoint's
+  table and refills it with the content as of `end` — so the guard must regress with the content
+  or the two disagree. The engine then replays `end+1..`, which applies cleanly because the
+  frontier and the rows moved together. The duplicate rows the report predicts require the resync
+  not to have cleared what it rebuilds, which is exactly the rule `0626dba` and `a_resync_clears_
+  only_its_own_group` hold down. Refusing the regressing resync instead would wedge the writer:
+  the engine has nothing older to offer, and every subsequent delta would arrive `Stale`.
+
 Method note for whoever dispatches the next one: the review budget is consumed by *searching* an
 830-test crate, not by reading. Give one file and one question per run, and tell it to write
 findings to a file as it goes — the run that did that is the only one whose work survived.
