@@ -1319,12 +1319,45 @@ Two environment facts found while writing it, both worth knowing outside the tes
   requires it to equal the batch's step, so a stale read can only cause a bail-out and a
   retry, never a duplicate commit.
 
-### 17.4 State
+### 17.4 A conflicting commit
 
-`cargo test -p dbsp_connectors --lib ducklake` → 30 passed (24 before this pass).
+Everything above runs against a **file**-backed catalog, and a file catalog serialises writers:
+the second attachment waits instead of conflicting. So the retry path — re-read the guard inside
+the transaction, find the step uncommitted, re-apply the same batch identity — had never run
+against a real conflict. Two cases now produce one, on a PostgreSQL catalog (a fresh database
+per case, created by the same `crate::test::postgres_catalog` helper the engine suite uses):
+
+- `tests_live::two_groups_commit_concurrently_into_one_catalog` — two threads, two output
+groups, one catalog, six steps each, rendezvousing before **every** `publish` so that each step's
+conflict is between two simultaneous commits. Asserts each group applied its six steps exactly
+once, sees only its own `3 × 6` rows, and its own guard at step 6; a third attachment then reads
+group A's guard. Measured retries per run: `A 3, B 3 of 6` (`A 4, B 2 of 6` on an earlier run).
+- `tests_live::a_resync_clears_only_its_own_group` — group B resyncs while group A's rows are in
+the same catalog; A keeps its two rows and its guard.
+
+The retry count is **printed, not asserted**: how many of the attempts DuckLake resolves as
+conflicts is its business, and a `>= 1` assertion would be a flaky test, not a stronger one. The
+assertions are on the outcome, which must be identical whether or not a conflict happened.
+
+A note on how they are written: the first version was a separate `tests_pg.rs` with its own
+`DUCKLAKE_PG_URL` plumbing and a hand-created database. That duplicated the harness the engine
+tests already had, and its per-run data path fought DuckLake's data-path check (a catalog records
+one data path; a mismatched `ATTACH` is refused). The cases live in `tests_live.rs` now, on a
+fresh database per case, and the only new export is `postgres_catalog`'s visibility.
+
+### 17.5 State
+
+`cargo test -p dbsp_connectors --lib ducklake` → 35 passed (30 before this pass); with
+PostgreSQL 17 up on `127.0.0.1:5432` all 35 run and 33 would pass without it, the two above
+printing why they skipped.
 `cargo test -p static-connectors --test connector_suites -- ducklake` → 5 passed, with
 PostgreSQL 17 running on `127.0.0.1:5432` and `DUCKLAKE_DUCKDB_CLI` pointing at DuckDB 2.0.0.
 Without PostgreSQL two of the five skip themselves and say so; without the CLI a third does.
+
+One build note for the `--lib` target on darwin/arm64: the test binary is close to the 128 MB
+`ARM64` branch range and the debug profile fails to link (`ld: b(l) ARM64 branch out of range`,
+from `ctor`'s priority-constructor). `CARGO_PROFILE_TEST_DEBUG=0 CARGO_PROFILE_TEST_OPT_LEVEL=1`
+links it; `--test connector_suites` is unaffected.
 
 **Open objectives:** none from `TODO.md` §3. What remains unverified is stated where it lives:
 the docs site was never built (§16), and no test drives `pipeline-manager` over HTTP — the

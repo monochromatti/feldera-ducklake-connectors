@@ -154,6 +154,20 @@ window in between.
   guarded publication, duplicate/stale/foreign-generation refusal, restart
   without replay or loss, and incremental polling that leaves exactly one copy
   of every row in Feldera.
+- **35 Rust tests** in the engine-side connectors (`cargo test -p dbsp_connectors
+  --lib ducklake` from the Feldera tree), of which 33 run against a real DuckDB
+  2.0 + DuckLake 2.0 catalog. The last two need PostgreSQL, which the engine
+  tests' own harness provides (`devenv up postgres` in this repo, or whatever
+  `Service::Postgres` points at): they commit two output groups into one catalog
+  from two threaded writers and check that a commit which loses the race is
+  retried and applied exactly once. A DuckDB-*file* catalog cannot show that — it
+  serialises writers — so this is the one part of the protocol that only exists
+  in the PostgreSQL deployment shape.
+
+  They skip themselves with a printed reason when no server answers, and print
+  how many steps were actually retried, because a run whose writers never
+  overlapped has exercised nothing extra — silence about that is how a green
+  suite comes to mean less than it looks.
 
 ## Limitations
 
