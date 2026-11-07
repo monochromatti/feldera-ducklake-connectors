@@ -1577,3 +1577,48 @@ done:
   read by nothing, and `refresh()` decides whether a `DETACH` failure is ignorable by matching
   message text. All three are engine-shaped rather than protocol-shaped; the last is the one that
   would bite first, if DuckDB reworded the error.
+
+### 17.11 The writer review that did arrive, and four readings I disagree with
+
+§17.7 said the writer defect axis never produced a report. That was wrong in one respect: the
+resumed run did write findings — to `/tmp/ducklake-review-1ba1.md`, which is why the completion
+notification carried an empty result file. Five attempts were mangled by tooling, not by the
+review: two timed out with nothing, one produced a report against a file three commits stale, one
+finished and its findings sat in `/tmp`. Seven findings, triaged against `1abf8b0`:
+
+**Fixed.** `batch_start` accepted a step after a refusal, and `publish_pending` reads an empty step
+as "the rows cancelled out" — so a writer that had already refused went on reporting clean step
+ends. And `records_written` was set for a `Duplicate`, where nothing is written.
+
+**Documented.** `key_columns` is a promise about the data, not a hint: keyed replacement removes at
+most one row per key, so a view that can emit two rows on one key ends up with one and the guard
+cannot tell that from a correct step. The connector cannot check it (that is a distinct-key count
+per step) so the config doc now says so.
+
+**Refused, `resync` frontier regression.** The claim is that a resync at `end = 3` moves the
+frontier back from 10, and a replay of step 7 then looks `Apply` and double-counts. The mechanism is
+real; the conclusion is not, because a resync's payload is the engine's content *as of its own
+`end`*. Both stable resync cases are restarts from a checkpoint at or before the steps being
+replayed, so those steps are absent from the snapshot and re-applying them is the correction, not a
+duplication. The proposed fix — a monotone frontier plus a separate `content_as_of` column — would
+turn the correction into a hole.
+
+**Refused, `base` read outside the transaction.** Taking `base` from the guard *inside* `attempt`
+would not avoid the race, it would hide it: the guard value would then equal the base by
+construction, `decide` would say `Apply`, and the CAS that should refuse a publication based on a
+frontier a peer already passed would be compared against itself. `Stale` is the correct verdict for
+"another writer is ahead of me", and it is the one that leads to `send_snapshot`.
+
+**Refused, a second `encode` for one step doubling the payload.** It would need two identical
+batches in one step. `batch_start` resets the buffer per step, so a replay arrives as a new step,
+and a *retried* step after an encoder error is refused rather than re-encoded. `extend` is what makes
+a step assembled from several batches work, which is what `ba1b777` established.
+
+**Already fixed.** `reader.rs`'s `current <= state.snapshot` returning silently is now a refusal —
+that is `source/catalog-rewind-is-refused`, and this report was written before it landed.
+
+**Build environment, recorded because it costs twenty minutes to rediscover:** the workspace needs
+rustc 1.99.0 (`~/.rustup/toolchains/1.99.0-aarch64-apple-darwin/bin`), and `rdkafka-sys` needs a
+`pkg-config` *binary* (none is on the default PATH) plus
+`PKG_CONFIG_PATH=<rdkafka-dev>/lib/pkgconfig:<tree>/build/duckdb-src`. Without the binary the error
+reads "librdkafka 2.12.1 cannot be found on the system", which looks like a library problem.
