@@ -110,7 +110,7 @@ tightly coupled.
 
 The value of the existing work is a *validated protocol*; the Rust port is a
 re-implementation of its transport, not a redesign. These invariants are proved in
-`formal/Connectors.lean` and exercised by 18 scenarios. Breaking any of them silently
+`formal/Connectors.lean` and exercised by 20 scenarios. Breaking any of them silently
 destroys the reason this exists.
 
 ### 1.1 The atomic commit (the core contract)
@@ -259,7 +259,7 @@ half that can be tested without a second system.
 | `src/fd_connectors/input_connector.py` | 315 | Stage C endpoint | bootstrap vs incremental; `check_history`; completion-token discipline |
 | `src/fd_connectors/journal.py` | 216 | engine checkpoints (S3) | atomicity of the journal write; "uncertain" must fail closed, not guess |
 | `src/fd_connectors/feldera.py` | 457 | **delete** — the REST client is what native replaces | ingress/egress REST calls disappear entirely |
-| `src/fd_connectors/scenarios.py` | 704 | Rust analogues of all 18 scenarios | see §5 |
+| `src/fd_connectors/scenarios.py` | 704 | Rust analogues of all 20 scenarios | see §5 |
 | `src/fd_connectors/cli.py` | 202 | optional debug tool | — |
 
 `tests/test_wire_format.py` (103 lines) holds a **verbatim capture of the live v0.374.0
@@ -274,7 +274,7 @@ egress wire format** — it is the ground truth for the `Encoder`. Do not re-der
 **The existing Python harness cannot validate the Rust connector.** `scenarios.py` drives
 `src/fd_connectors/` directly, whereas a native connector is exercised through a pipeline
 that declares `WITH ('connectors' = '[{"transport": {"name": "ducklake", ...}}]')`.
-So "port the 18 scenarios" does **not** mean running `fd-scenarios` against Rust.
+So "port the 20 scenarios" does **not** mean running `fd-scenarios` against Rust.
 
 Three layers, increasing in cost:
 
@@ -1227,9 +1227,9 @@ Re-run both ways to confirm — `3 passed` with the server absent (skip announce
 Three gaps were left open at the end of §16. All three are closed, by tests rather than by
 prose. The tests live in `crates/connectors/src/integrated/ducklake/{protocol,catalog,tests_live,test}.rs`.
 
-### 17.1 The 18 scenarios, mapped
+### 17.1 The scenarios, mapped
 
-`src/fd_connectors/scenarios.py` names 18 protocol requirements. Auditing the Rust suite
+`src/fd_connectors/scenarios.py` names 20 protocol requirements. Auditing the Rust suite
 against them by name found six with no counterpart at the level the scenario tests, and one
 whole requirement (`protocol/decision-is-total`) that no Rust test covered at all. All are now
 mapped; the ones added in this pass are marked **new**.
@@ -1245,7 +1245,9 @@ mapped; the ones added in this pass are marked **new**.
 | `ducklake/payload-and-guard-are-atomic-on-payload-failure` | **new** `tests_live::a_payload_failure_leaves_the_guard_and_the_history_where_they_were` |
 | `ducklake/reader-sees-payload-and-guard-together` | same test — see the deviation below |
 | `ducklake/rollback-leaves-history-replayable` | same test: the frontier **and** the committed snapshot are unchanged |
-| `ducklake/resync-replaces-content-and-is-idempotent` | **new** `tests_live::a_resync_replaces_the_content_and_replays_as_a_duplicate` |
+| `ducklake/resync-replaces-content-and-is-idempotent` | **new** `tests_live::a_resync_replaces_the_content_and_replays_as_a_duplicate`
+| `guard/resync-clears-only-the-tables-it-repopulates` | `tests_live::a_resync_clears_only_its_own_group` (the scenario is the Python half of the same rule; the Rust `Catalog::publish` `tables` argument is what it mirrors) |
+| `guard/keyed-replacement-matches-a-null-key` | none by name — `catalog.rs`'s keyed delete uses `IS NOT DISTINCT FROM` and no Rust test covers a NULL key part, so this scenario is ahead of the Rust suite rather than behind it |
 | `ducklake/keyed-update-is-delete-then-insert` | **new** `tests_live::a_keyed_update_leaves_the_post_image` |
 | `ducklake/multiset-delete-removes-one-copy` | **new** `tests_live::a_multiset_delete_removes_one_copy` |
 | `ducklake/concurrent-publishers-converge-to-one-outcome` | `test::two_engines_publishing_the_same_step_converge_on_one_outcome` |

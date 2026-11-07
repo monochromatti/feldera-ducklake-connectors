@@ -116,7 +116,7 @@ and `Quot.sound`.
 The bundle's `formal/sql_checks.py` is the **first round**: nine SQL scenarios
 against DuckDB 2.0.0 and DuckLake build `417a9117f5`, recorded in
 `formal/sql-results.json`. `src/fd_connectors/scenarios.py` is the evolved,
-executable descendant of those checks — 18 scenarios, run by `fd-connectors
+executable descendant of those checks — 20 scenarios, run by `fd-connectors
 validate-local`, and the thing CI gates on. When the two disagree, the code and
 the scenarios are what ship; the model is what justifies them, and changing the
 protocol means changing the model too.

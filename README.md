@@ -46,7 +46,7 @@ uv run fd-connectors validate-local
 ```text
 PASS  guard/apply-advances-frontier
 ...
-18/18 scenarios passed
+20/20 scenarios passed
 ```
 
 That is the check to run before and after touching the connectors. To go
@@ -145,7 +145,7 @@ window in between.
 | DuckLake | official extension bundled with that DuckDB build |
 | Postgres | `17` (for production-shaped catalogs; a DuckDB file works too) |
 
-- **18 protocol scenarios** (`validate-local`) against real DuckLake catalogs,
+- **20 protocol scenarios** (`validate-local`) against real DuckLake catalogs,
   each read back through an independent cursor rather than the writing
   connection, so a publisher that forgets the guard update fails: atomic
   visibility, rollback, retry idempotence, fencing, competing publishers, keyed

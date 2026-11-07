@@ -396,6 +396,9 @@ class DuckLake:
             raise ProtocolError(f"batch writes tables outside this connector: {unknown}")
 
         conflict: str | None = None
+        # The tables a resync may clear, as in the Rust writer: what the batch
+        # repopulates, or everything this connector owns when it names nothing.
+        resync_tables = tuple(sorted({delta.table for delta in batch.deltas})) or self.tables
         for attempt in range(1, max_attempts + 1):
             cur = self.cursor()
             try:
@@ -406,7 +409,7 @@ class DuckLake:
                     cur.execute("ROLLBACK")
                     return PublicationResult(decision, guard, attempt, conflict)
                 self._update_guard(cur, guard, batch)
-                self._apply_payload(cur, batch)
+                self._apply_payload(cur, batch, resync_tables)
                 cur.execute("COMMIT")
                 return PublicationResult(Decision.APPLY, advance(guard, batch), attempt, conflict)
             except duckdb.Error as exc:
@@ -446,9 +449,18 @@ class DuckLake:
                 "a concurrent publisher changed it"
             )
 
-    def _apply_payload(self, cur: duckdb.DuckDBPyConnection, batch: Batch) -> None:
+    def _apply_payload(
+        self, cur: duckdb.DuckDBPyConnection, batch: Batch, tables: Sequence[str]
+    ) -> None:
         if batch.resync:
-            for table in self.tables:
+            # Only the tables this batch repopulates.  Clearing every configured
+            # table would let a resync of one view delete the rows another view
+            # owns, and then advance the guard over the hole: the rows are gone,
+            # the batch is committed, and nothing reports a problem.  The Rust
+            # writer was fixed to the same rule (`Catalog::publish`'s `tables`
+            # argument); a batch that names no table at all still means "all of
+            # them", which is why the caller falls back to `self.tables`.
+            for table in tables:
                 cur.execute(f"DELETE FROM {self.qualified(table)}")
         # Deletions first: in row mode a delete must match the state the batch
         # starts from, which still contains rows that this batch also inserts.
@@ -464,7 +476,11 @@ class DuckLake:
         keys = self.key_columns.get(table)
 
         if keys:
-            predicate = " AND ".join(f"{quote_ident(k)} = ?" for k in keys)
+            # `IS NOT DISTINCT FROM`, not `=`: a NULL key part never equals
+            # anything, so `= ?` would match no row, delete nothing, and still
+            # advance the guard — leaving the previous row in place next to the
+            # one this delta inserts.
+            predicate = " AND ".join(f"{quote_ident(k)} IS NOT DISTINCT FROM ?" for k in keys)
             cur.execute(f"DELETE FROM {target} WHERE {predicate}", [row[k] for k in keys])
         elif delta.op is Op.DELETE:
             # Multiplicity-preserving removal: exactly one matching row.

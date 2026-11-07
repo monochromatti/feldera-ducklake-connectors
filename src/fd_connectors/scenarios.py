@@ -370,6 +370,58 @@ def resync_replaces_content(root: Path) -> str:
     return "resync drops row 1, rewrites row 2, and replays as DUPLICATE"
 
 
+@scenario("guard/resync-clears-only-the-tables-it-repopulates")
+def resync_clears_only_its_own_table(root: Path) -> str:
+    """A resync of one table must not delete another table's rows.
+
+    Both tables belong to the same output group, so one guard covers them: a
+    resync that cleared every configured table would delete `invoices` without
+    repopulating it, advance the guard, and commit — the rows gone, the batch
+    recorded as applied, and nothing left to notice.  The Rust writer says the
+    same thing with `Catalog::publish`'s `tables` argument.
+    """
+    lake = make_lake(root, tables=("orders", "invoices"))
+    provision(lake)
+    lake.publish(fresh_batch(base=0, end=1, rows=[{"id": 1, "customer": "a", "total": 10.0}]))
+    lake.publish(
+        fresh_batch(
+            base=1,
+            end=2,
+            table="invoices",
+            rows=[{"id": 1, "customer": "inv", "total": 99.0}],
+        )
+    )
+    assert row_ids(lake, "invoices") == [(1, "inv", 99.0)], row_ids(lake, "invoices")
+
+    resync = fresh_batch(
+        base=0,
+        end=5,
+        rows=[{"id": 2, "customer": "b", "total": 20.0}],
+        resync=True,
+    )
+    assert lake.publish(resync).decision is Decision.APPLY
+    assert row_ids(lake) == [(2, "b", 20.0)], row_ids(lake)
+    assert row_ids(lake, "invoices") == [(1, "inv", 99.0)], row_ids(lake, "invoices")
+    return "the resync cleared `orders` only; `invoices` kept its row and the guard covered both"
+
+
+@scenario("guard/keyed-replacement-matches-a-null-key")
+def keyed_replacement_matches_a_null_key(root: Path) -> str:
+    """A NULL key part must be matched, not silently skipped.
+
+    `=` never matches NULL, so a delete-by-key written with `=` deletes nothing
+    for such a row, and the insert that follows leaves the old row in place: two
+    rows where the pipeline said one, with the guard advanced past both.  The
+    Rust writer uses `IS NOT DISTINCT FROM` for exactly this reason.
+    """
+    lake = make_lake(root)
+    provision(lake)
+    lake.publish(fresh_batch(base=0, end=1, rows=[{"id": None, "customer": "a", "total": 1.0}]))
+    lake.publish(fresh_batch(base=1, end=2, rows=[{"id": None, "customer": "b", "total": 2.0}]))
+    assert row_ids(lake) == [(None, "b", 2.0)], row_ids(lake)
+    return "the NULL-keyed row was replaced, not duplicated"
+
+
 # -- scenarios: row algebra --------------------------------------------------
 
 
