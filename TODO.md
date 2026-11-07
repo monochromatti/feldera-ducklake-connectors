@@ -1247,7 +1247,7 @@ mapped; the ones added in this pass are marked **new**.
 | `ducklake/rollback-leaves-history-replayable` | same test: the frontier **and** the committed snapshot are unchanged |
 | `ducklake/resync-replaces-content-and-is-idempotent` | **new** `tests_live::a_resync_replaces_the_content_and_replays_as_a_duplicate`
 | `guard/resync-clears-only-the-tables-it-repopulates` | `tests_live::a_resync_clears_only_its_own_group` (the scenario is the Python half of the same rule; the Rust `Catalog::publish` `tables` argument is what it mirrors) |
-| `guard/keyed-replacement-matches-a-null-key` | none by name — `catalog.rs`'s keyed delete uses `IS NOT DISTINCT FROM` and no Rust test covers a NULL key part, so this scenario is ahead of the Rust suite rather than behind it |
+| `guard/keyed-replacement-matches-a-null-key` | `tests_live::a_null_key_part_is_matched_not_skipped` — reverting the Rust `IS NOT DISTINCT FROM` to `=` makes it report two rows for one key |
 | `ducklake/keyed-update-is-delete-then-insert` | **new** `tests_live::a_keyed_update_leaves_the_post_image` |
 | `ducklake/multiset-delete-removes-one-copy` | **new** `tests_live::a_multiset_delete_removes_one_copy` |
 | `ducklake/concurrent-publishers-converge-to-one-outcome` | `test::two_engines_publishing_the_same_step_converge_on_one_outcome` |
@@ -1354,8 +1354,8 @@ fresh database per case, and the only new export is `postgres_catalog`'s visibil
 
 ### 17.5 State
 
-`cargo test -p dbsp_connectors --lib ducklake` → 35 passed (30 before this pass); with
-PostgreSQL 17 up on `127.0.0.1:5432` all 35 run, and without it the two PostgreSQL cases print
+`cargo test -p dbsp_connectors --lib ducklake` → 36 passed (30 before this pass); with
+PostgreSQL 17 up on `127.0.0.1:5432` all 36 run, and without it the two PostgreSQL cases print
 why they skipped instead of failing.
 `cargo test -p static-connectors --test connector_suites -- ducklake` → 5 passed, with
 PostgreSQL 17 running on `127.0.0.1:5432` and `DUCKLAKE_DUCKDB_CLI` pointing at DuckDB 2.0.0.

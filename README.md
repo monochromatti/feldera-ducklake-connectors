@@ -157,10 +157,10 @@ window in between.
   of every row in Feldera. The sixth case in that module
   (`test_recover_fails_on_uncertain_batch_and_rebootstraps`) is journalled-input
   only — it never contacts Feldera, and only skips nothing.
-- **35 Rust tests** in the engine-side connectors (`cargo test -p dbsp_connectors
-  --lib ducklake` from the Feldera tree). 14 of them open a real DuckDB 2.0 +
+- **36 Rust tests** in the engine-side connectors (`cargo test -p dbsp_connectors
+  --lib ducklake` from the Feldera tree). 15 of them open a real DuckDB 2.0 +
   DuckLake 2.0 catalog; the other 21 are pure protocol/codec tests that need no
-  database. Two of the 14 need PostgreSQL, which the engine tests' own harness
+  database. Two of the 15 need PostgreSQL, which the engine tests' own harness
   provides (`devenv up postgres` in this repo, or whatever `Service::Postgres`
   points at): one commits two output groups into one catalog from two threaded
   writers and checks that a commit which loses the race is retried and applied
