@@ -237,7 +237,7 @@ rule `AGENTS.md` sets for this repo.
 
 | # | Stage | Deliverable | Gate |
 |---|-------|-------------|------|
-| A | Scaffolding | `TransportConfig::DuckLakeInput` / `DuckLakeOutput` in `crates/feldera-types/src/config.rs`; `with-ducklake` feature; config structs | workspace compiles; config round-trips through JSON (see `openapi.json`) |
+| A | Scaffolding | `TransportConfig::DuckLakeInput` / `DuckLakeOutput` in `crates/feldera-types/src/config.rs`; ~~`with-ducklake` feature~~ (dropped in §12.2 — nothing to gate); config structs | workspace compiles; config round-trips through JSON (see `openapi.json`) |
 | B | Output connector | `crates/connectors/src/integrated/ducklake/`: implements `OutputEndpoint` + `Encoder` (mirror `IntegratedOutputEndpoint`); publishes the guard row from §1.1 | engine-free unit tests (the `dbsp_connectors` suite pattern) |
 | C | Input connector | `TransportInputEndpoint` + `InputReader`/`InputConsumer`; change-interval tracking with `start_snapshot + 1`; bootstrap vs incremental | engine-free unit tests |
 | D | Engine tests | `#[engine_test]` cases registered in `crates/static-connectors`, `requires(...)`/`services(...)` as needed | `cargo test -p static-connectors --test connector_suites` |
@@ -693,9 +693,11 @@ Recorded rather than silently editing the stages:
 1. `git clone` (or copy) upstream to `~/Code/feldera`, `git switch -c ducklake-connector` at
    `288cd64a`, and rebuild the baseline there with the two workarounds from §9.1 so the
    first commit starts from a known-green tree.
-2. Stage A only: `TransportConfig::DuckLakeInput`/`DuckLakeOutput`, `with-ducklake` feature
-   (mirroring `with-deltalake` in `crates/connectors/Cargo.toml:21-28`), config structs, and
-   a no-op endpoint that compiles — no catalog access yet.
+2. Stage A only: `TransportConfig::DuckLakeInput`/`DuckLakeOutput`, ~~`with-ducklake` feature~~
+   (dropped in §12.2: `libduckdb` is loaded at runtime, so there is nothing to gate), config
+   structs, and a no-op endpoint that compiles — no catalog access yet.
+   *The rest of this list is the plan as written before stage A; the counts and file names in
+   it are as of that stage, not the current tree.*
 3. Re-read §9.3 and §9.4 before writing Stage B: they carry requirements that are cheap to
    satisfy at design time and expensive to retrofit.
 ## 10. Session 2 result (Stage A)
@@ -921,7 +923,8 @@ mechanism from §11.3), not started (m00001 §3).
 
 `crates/connectors/src/integrated/ducklake/tests_live.rs` in the Feldera tree runs the real
 thing — real `libduckdb`, real signed extension, real catalog file — and both of its tests pass
-under the nix shell (0.59s):
+under the nix shell (0.59s). *The counts in §12–§14 are as of the stage that wrote them; the
+module has 13 live tests now, see §17.5.* At this stage there were two:
 
 - `publishing_the_same_batch_twice_applies_it_once` — first publish `Apply`, republication
   `Duplicate`, frontier `1`, `count(*) = 2`.
@@ -1233,7 +1236,7 @@ mapped; the ones added in this pass are marked **new**.
 
 | `scenarios.py` | Rust |
 |---|---|
-| `guard/apply-advances-frontier` | `protocol::a_batch_on_top_of_the_frontier_applies`, `protocol::advancing_records_the_identity_and_the_digest`, `tests_live::a_published_step_and_a_replayed_step_leave_one_copy_of_its_rows` |
+| `guard/apply-advances-frontier` | `protocol::a_batch_on_top_of_the_frontier_applies`, `protocol::advancing_records_the_identity_and_the_digest`, `catalog::a_published_step_and_a_replayed_step_leave_one_copy_of_its_rows` |
 | `guard/duplicate-retry-is-a-no-op` | `protocol::replaying_the_committed_batch_is_a_duplicate_not_a_second_apply`, `tests_live::publishing_the_same_batch_twice_applies_it_once` |
 | `guard/stale-publisher-is-refused` | `protocol::an_overtaken_interval_is_stale_even_with_an_older_base`, `protocol::a_batch_whose_base_is_not_the_frontier_is_stale` |
 | `guard/foreign-generation-is-refused` | `protocol::another_generation_is_refused_outright` |
@@ -1282,8 +1285,9 @@ Two environment facts found while writing it, both worth knowing outside the tes
 
 - **The `duckdb` CLI must match the vendored extension's version.** `PATH` here offers
   `1.5.2` — newer than `1.5` and older than `2.0` — and loading a `2.0.0` extension into it
-  fails in a way that reads like a connector bug. The case checks `--version` for `v2.0.0` and
-  skips otherwise (`DUCKLAKE_DUCKDB_CLI`).
+  fails in a way that reads like a connector bug. The case parses `--version` and compares only
+  the **major** number against `2`, so a `2.0.1` build is accepted, and skips when no CLI is
+  found (`DUCKLAKE_DUCKDB_CLI`).
 - **`extension_directory` must be writable only if DuckDB has to install something.** A
   PostgreSQL catalog makes DuckLake load `postgres_scanner`, and DuckDB `INSTALL`s a missing
   extension into `extension_directory`. A read-only vendored directory that lacks it (a Nix
@@ -1331,7 +1335,8 @@ per case, created by the same `crate::test::postgres_catalog` helper the engine 
 groups, one catalog, six steps each, rendezvousing before **every** `publish` so that each step's
 conflict is between two simultaneous commits. Asserts each group applied its six steps exactly
 once, sees only its own `3 × 6` rows, and its own guard at step 6; a third attachment then reads
-group A's guard. Measured retries per run: `A 3, B 3 of 6` (`A 4, B 2 of 6` on an earlier run).
+group A's guard. Retries observed on two local runs (printed, not asserted): `A 3, B 3 of 6`
+and `A 4, B 2 of 6`.
 - `tests_live::a_resync_clears_only_its_own_group` — group B resyncs while group A's rows are in
 the same catalog; A keeps its two rows and its guard.
 
@@ -1348,11 +1353,15 @@ fresh database per case, and the only new export is `postgres_catalog`'s visibil
 ### 17.5 State
 
 `cargo test -p dbsp_connectors --lib ducklake` → 35 passed (30 before this pass); with
-PostgreSQL 17 up on `127.0.0.1:5432` all 35 run and 33 would pass without it, the two above
-printing why they skipped.
+PostgreSQL 17 up on `127.0.0.1:5432` all 35 run, and without it the two PostgreSQL cases print
+why they skipped instead of failing.
 `cargo test -p static-connectors --test connector_suites -- ducklake` → 5 passed, with
 PostgreSQL 17 running on `127.0.0.1:5432` and `DUCKLAKE_DUCKDB_CLI` pointing at DuckDB 2.0.0.
-Without PostgreSQL two of the five skip themselves and say so; without the CLI a third does.
+All five need `DUCKLAKE_EXTENSION_DIR`; the three file-catalog cases **panic** without it rather
+than skip, deliberately, so a test that lost its environment cannot quietly fall back to
+`INSTALL ducklake`. The two PostgreSQL cases skip with a printed reason when no server answers,
+and the cross-process one of them also skips when no DuckDB CLI is found — so PostgreSQL absent
+costs two, CLI absent costs one on top of that.
 
 One build note for the `--lib` target on darwin/arm64: the test binary is close to the 128 MB
 `ARM64` branch range and the debug profile fails to link (`ld: b(l) ARM64 branch out of range`,

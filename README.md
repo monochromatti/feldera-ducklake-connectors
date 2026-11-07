@@ -139,35 +139,40 @@ window in between.
 
 | Component | Version exercised |
 |---|---|
-| Feldera pipeline-manager | `0.374.0` (community edition, container) |
+| Feldera pipeline-manager | `0.374.0` — the `.../pipeline-manager:latest` image `devenv.nix` runs, so the
+  tag is not pinned; the version in the table is what that tag reported on the last run |
 | DuckDB | `2.0.0` |
 | DuckLake | official extension bundled with that DuckDB build |
 | Postgres | `17` (for production-shaped catalogs; a DuckDB file works too) |
 
 - **18 protocol scenarios** (`validate-local`) against real DuckLake catalogs,
-  each checked with a second cursor so a publisher that forgets the guard update
-  fails: atomic visibility, rollback, retry idempotence, fencing, competing
-  publishers, keyed vs multiset replacement, and the append-only-receipt
-  lost-update counterexample.
-- **25 tests** (`pytest tests/`), including six end-to-end tests driving a real
-  pipeline-manager and a real DuckLake catalog: bootstrap → aggregate view →
+  each read back through an independent cursor rather than the writing
+  connection, so a publisher that forgets the guard update fails: atomic
+  visibility, rollback, retry idempotence, fencing, competing publishers, keyed
+  vs multiset replacement, and the append-only-receipt lost-update counterexample.
+- **25 tests** (`pytest tests/`), including five end-to-end tests that drive a
+  real pipeline-manager and a real DuckLake catalog: bootstrap → aggregate view →
   guarded publication, duplicate/stale/foreign-generation refusal, restart
   without replay or loss, and incremental polling that leaves exactly one copy
-  of every row in Feldera.
+  of every row in Feldera. The sixth case in that module
+  (`test_recover_fails_on_uncertain_batch_and_rebootstraps`) is journalled-input
+  only — it never contacts Feldera, and only skips nothing.
 - **35 Rust tests** in the engine-side connectors (`cargo test -p dbsp_connectors
-  --lib ducklake` from the Feldera tree), of which 33 run against a real DuckDB
-  2.0 + DuckLake 2.0 catalog. The last two need PostgreSQL, which the engine
-  tests' own harness provides (`devenv up postgres` in this repo, or whatever
-  `Service::Postgres` points at): they commit two output groups into one catalog
-  from two threaded writers and check that a commit which loses the race is
-  retried and applied exactly once. A DuckDB-*file* catalog cannot show that — it
-  serialises writers — so this is the one part of the protocol that only exists
-  in the PostgreSQL deployment shape.
+  --lib ducklake` from the Feldera tree). 14 of them open a real DuckDB 2.0 +
+  DuckLake 2.0 catalog; the other 21 are pure protocol/codec tests that need no
+  database. Two of the 14 need PostgreSQL, which the engine tests' own harness
+  provides (`devenv up postgres` in this repo, or whatever `Service::Postgres`
+  points at): one commits two output groups into one catalog from two threaded
+  writers and checks that a commit which loses the race is retried and applied
+  exactly once, the other checks a resync clears only its own tables. A
+  DuckDB-*file* catalog cannot pose the first question — it serialises writers,
+  so the conflicting commit never happens — which is why that one only exists in
+  the PostgreSQL deployment shape.
 
-  They skip themselves with a printed reason when no server answers, and print
-  how many steps were actually retried, because a run whose writers never
-  overlapped has exercised nothing extra — silence about that is how a green
-  suite comes to mean less than it looks.
+  They skip themselves with a printed reason when no server answers, and the
+  concurrency case prints how many steps were actually retried, because a run
+  whose writers never overlapped has exercised nothing extra — silence about
+  that is how a green suite comes to mean less than it looks.
 
 ## Limitations
 
@@ -226,8 +231,9 @@ feldera-up     # start the Feldera pipeline-manager container on :18080
 fd-e2e         # end-to-end test against the live stack (skips if absent)
 ```
 
-The e2e module **skips silently** when no pipeline-manager answers `$FELDERA_URL`,
-so check that it actually ran rather than passing vacuously. Re-check the proof
+The e2e module **skips** when no pipeline-manager answers `$FELDERA_URL` and
+prints the reason, so a green exit code still hides five unrun cases: check the
+count of tests that ran rather than trusting the exit status. Re-check the proof
 model with Lean 4.19.0 via `cd formal && bash verify.sh`.
 
 ## Operating the local stack

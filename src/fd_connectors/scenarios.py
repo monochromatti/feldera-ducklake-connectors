@@ -129,7 +129,13 @@ def fresh_batch(
 
 
 def row_ids(lake: DuckLake, table: str = "orders") -> list[tuple[Any, ...]]:
-    rows = lake.connection.execute(f"SELECT * FROM {lake.qualified(table)} ORDER BY id").fetchall()
+    # Through an independent transaction context, never the writing connection:
+    # a scenario must be able to fail when the payload landed but the guard did
+    # not, and a reader sharing the writer's connection could be handed the
+    # writer's session state instead of the committed snapshot.  `cursor()` is a
+    # second connection to the same attached database, so it sees exactly what a
+    # later process would.
+    rows = lake.cursor().execute(f"SELECT * FROM {lake.qualified(table)} ORDER BY id").fetchall()
     return list(rows)
 
 
@@ -293,10 +299,14 @@ def reader_sees_payload_and_guard_together(root: Path) -> str:
     assert in_snapshot == (0, 0), in_snapshot
     reader.execute("COMMIT")
     # A fresh transaction sees both changes.
-    fresh = lake.connection.execute(
-        f"SELECT (SELECT count(*) FROM {lake.qualified('orders')}), frontier "
-        f"FROM {lake.qualified('connector_guard')} WHERE output_group = 'summary'"
-    ).fetchone()
+    fresh = (
+        lake.cursor()
+        .execute(
+            f"SELECT (SELECT count(*) FROM {lake.qualified('orders')}), frontier "
+            f"FROM {lake.qualified('connector_guard')} WHERE output_group = 'summary'"
+        )
+        .fetchone()
+    )
     assert fresh == (1, 1), fresh
     # Snapshot-versioned reads straddle the publication: the version before it
     # is empty, the version after it has the row.
@@ -637,9 +647,9 @@ def append_only_receipt_duplicates(root: Path) -> str:
             [delta.row["id"], delta.row["customer"], delta.row["total"]],
         )
     lake.connection.execute("COMMIT")
-    receipts_before = lake.connection.execute(
-        f"SELECT count(*) FROM {lake.qualified('receipts')}"
-    ).fetchone()[0]
+    receipts_before = (
+        lake.cursor().execute(f"SELECT count(*) FROM {lake.qualified('receipts')}").fetchone()[0]
+    )
     # Restart: the naive publisher cannot tell whether the payload landed, so it
     # re-applies it.
     for delta in naive_batch.deltas:
@@ -647,9 +657,9 @@ def append_only_receipt_duplicates(root: Path) -> str:
             f"INSERT INTO {lake.qualified('orders')} (id, customer, total) VALUES (?, ?, ?)",
             [delta.row["id"], delta.row["customer"], delta.row["total"]],
         )
-    naive_rows = lake.connection.execute(
-        f"SELECT count(*) FROM {lake.qualified('orders')}"
-    ).fetchone()[0]
+    naive_rows = (
+        lake.cursor().execute(f"SELECT count(*) FROM {lake.qualified('orders')}").fetchone()[0]
+    )
     assert receipts_before == 0, receipts_before
     assert naive_rows == 2, f"the naive design must duplicate the row, saw {naive_rows}"
     # Now the guarded design on the same catalog, in a fresh group.
@@ -659,9 +669,11 @@ def append_only_receipt_duplicates(root: Path) -> str:
     )
     lake.publish(guarded)
     lake.publish(guarded)
-    rows = lake.connection.execute(
-        f"SELECT count(*) FROM {lake.qualified('orders')} WHERE id = 9"
-    ).fetchone()[0]
+    rows = (
+        lake.cursor()
+        .execute(f"SELECT count(*) FROM {lake.qualified('orders')} WHERE id = 9")
+        .fetchone()[0]
+    )
     assert rows == 1, rows
     assert lake.read_guard("guarded").frontier == 1
     return "append-only receipt duplicates the row (2); the guard row keeps 1"
