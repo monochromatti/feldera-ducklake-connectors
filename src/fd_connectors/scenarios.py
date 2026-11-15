@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .catalog import DuckLake, HistoryExpiredError
+from .catalog import DuckLake, GuardInvariantError, HistoryExpiredError
 from .feldera import FelderaClient
 from .input_connector import InputConnector, InputSpec
 from .journal import Checkpoint, Journal
@@ -772,6 +772,109 @@ def append_only_receipt_duplicates(root: Path) -> str:
 
 
 # -- runner ------------------------------------------------------------------
+
+
+# -- scenarios: the guard row is not unique ----------------------------------
+
+
+def _duplicate_guard_row(lake: DuckLake, token: str = "another-writer") -> None:
+    """Add a second guard row for ``summary``, as a racing provisioner would."""
+    guard = lake.qualified("connector_guard")
+    lake.connection.execute(
+        f"INSERT INTO {guard} "
+        "SELECT output_group, generation, epoch, frontier, batch_id, digest, updated_at, ? "
+        f"FROM {guard} WHERE output_group = 'summary'",
+        [token],
+    )
+
+
+@scenario("guard/a-duplicated-guard-row-is-still-one-guard")
+def duplicated_guard_row_is_one_guard(root: Path) -> str:
+    """Two provisioners can leave two guard rows; the group stays usable.
+
+    DuckLake has no ``PRIMARY KEY`` and no ``UNIQUE`` (``make_lake`` records the
+    error), so ``INSERT … WHERE NOT EXISTS`` is a check-then-act that two racing
+    writers both pass: two inserts of *different* rows do not conflict, only two
+    writes of the same row do. The connector therefore cannot assume the row is
+    single, and refusing the duplicate would wedge a catalog that needs no
+    repair — every write is one statement matching all rows of the group, so a
+    duplicated guard advances as a single value. This is the case that pins
+    that: the duplicate must be readable, and publishing must still apply once.
+    """
+    lake = make_lake(root)
+    provision(lake)
+    guard = lake.read_guard("summary")
+    _duplicate_guard_row(lake)
+    assert lake.read_guard("summary") == guard, "identical rows are one guard"
+    guard_table = lake.qualified("connector_guard")
+
+    # Disagreeing rows are two histories, not a duplicate, and are refused.  (This
+    # runs before the publish below, which overwrites both rows' tokens and would
+    # leave the check no row to find.)
+    lake.connection.execute(
+        f"UPDATE {guard_table} SET frontier = 99 WHERE output_group = 'summary' AND token = ?",
+        ["another-writer"],
+    )
+    try:
+        lake.read_guard("summary")
+    except GuardInvariantError as exc:
+        assert "disagree" in str(exc), exc
+    else:
+        raise AssertionError("guard rows that disagree must be refused, not picked from")
+    lake.connection.execute(
+        f"UPDATE {guard_table} SET frontier = ? WHERE output_group = 'summary' AND token = ?",
+        [guard.frontier, "another-writer"],
+    )
+
+    batch = fresh_batch(base=0, end=1, rows=[{"id": 1, "customer": "a", "total": 10.0}])
+    applied = lake.publish(batch)
+    again = lake.publish(batch)
+    assert applied.decision is Decision.APPLY, applied
+    assert again.decision is Decision.DUPLICATE, again
+    assert row_ids(lake) == [(1, "a", 10.0)], row_ids(lake)
+    advanced = lake.connection.execute(
+        f"SELECT count(*) FROM {guard_table} WHERE output_group = 'summary' AND frontier = ?",
+        [batch.end],
+    ).fetchone()[0]
+    assert advanced == 2, f"both rows advanced together, {advanced} did"
+    return "identical guard rows read as one and advance together; disagreement is refused"
+
+
+@scenario("guard/an-update-that-matched-nothing-is-refused")
+def update_that_matched_nothing_is_refused(root: Path) -> str:
+    """A guard write that matched no row must fail even when the row looks right.
+
+    The lost update this prevents: a publisher reads the guard, another commits
+    the *same* batch, then the first one's conditional ``UPDATE`` matches nothing
+    — and the row still shows exactly the frontier and batch id it meant to
+    write, so a post-check comparing those values passes and the payload is
+    applied twice. The write token is what distinguishes "I wrote this" from
+    "someone wrote what I would have".
+    """
+    lake = make_lake(root)
+    provision(lake)
+    batch = fresh_batch(base=0, end=1, rows=[{"id": 1, "customer": "a", "total": 10.0}])
+    stale = lake.read_guard("summary")
+    assert lake.publish(batch).decision is Decision.APPLY
+
+    # The state the check would have accepted: the frontier and identity are the
+    # ones this batch asked for, written by someone else.
+    now = lake.read_guard("summary")
+    assert (now.frontier, now.batch_id) == (batch.end, batch.batch_id), now
+
+    cur = lake.cursor()
+    cur.execute("BEGIN TRANSACTION")
+    try:
+        lake._update_guard(cur, stale, batch, "fresh-attempt-nonce")
+    except ProtocolError as exc:
+        assert "did not advance" in str(exc), exc
+    else:
+        raise AssertionError("a guard update that matched no row was accepted")
+    finally:
+        with contextlib.suppress(Exception):
+            cur.execute("ROLLBACK")
+    assert row_ids(lake) == [(1, "a", 10.0)], row_ids(lake)
+    return "an update that matched no guard row is refused, not read as a success"
 
 
 def run_all(

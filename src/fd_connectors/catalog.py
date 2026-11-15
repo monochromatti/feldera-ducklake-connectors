@@ -10,7 +10,10 @@ PostgreSQL-backed (a DuckDB-file catalog is single-writer).
 from __future__ import annotations
 
 import contextlib
+import os
 import re
+import time
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -32,6 +35,16 @@ from .protocol import (
 )
 
 DEFAULT_GUARD_TABLE = "connector_guard"
+
+
+def _nonce() -> str:
+    """A value that sorts deterministically against other processes' writes.
+
+    Time first so two processes nearly always order by when they wrote, pid and a
+    random suffix to break ties; nothing depends on the order being fair, only on
+    it being total.
+    """
+    return f"{time.time_ns():032x}-{os.getpid():08x}-{uuid.uuid4().hex[:8]}"
 
 
 class GuardInvariantError(ProtocolError):
@@ -121,6 +134,15 @@ class DuckLake:
     inlining_row_limit: int | None = None
     _connection: duckdb.DuckDBPyConnection | None = None
     _extension_version: str | None = None
+    token: str = field(
+        default_factory=lambda: f"{time.time_ns():032x}-{os.getpid():08x}-{uuid.uuid4().hex[:8]}"
+    )
+    """Identity of this writer's guard-row writes.
+
+    Two jobs, both from DuckLake's lack of constraints: it makes the tidy-up in
+    :meth:`provision_guard` a decision rather than a race, and it lets
+    :meth:`_update_guard` tell "my ``UPDATE`` wrote this row" from "another
+    publisher wrote the same values first"."""
 
     def __post_init__(self) -> None:
         self.tables = tuple(self.tables)
@@ -286,26 +308,52 @@ class DuckLake:
     def read_guard(
         self, output_group: str, *, cur: duckdb.DuckDBPyConnection | None = None
     ) -> Guard:
-        """Read the protected singleton row, enforcing the singleton invariant."""
+        """Read the protected row, tolerating duplicates that agree.
+
+        DuckLake rejects ``PRIMARY KEY`` and ``UNIQUE`` ("PRIMARY KEY/UNIQUE
+        constraints are not supported in DuckLake"), so nothing in the storage
+        stops two writers provisioning one group at the same time: both
+        ``INSERT … WHERE NOT EXISTS`` statements are check-then-act, and two
+        inserts of different rows do not conflict. Refusing the duplicate would
+        wedge a catalog that needs no repair, because every write is a single
+        statement matching *all* rows of the group — the conditional ``UPDATE``
+        advances them together or not at all, so a duplicated row stays a
+        duplicated row with one value. Rows that disagree are two histories, and
+        those are still refused.
+        """
         cur = cur or self.connection
         rows = cur.execute(
             f"SELECT output_group, generation, epoch, frontier, batch_id, digest "
             f"FROM {self.qualified(self.guard_table)} WHERE output_group = ?",
             [output_group],
         ).fetchall()
-        if len(rows) != 1:
-            raise GuardInvariantError(
-                f"output group {output_group!r} must have exactly one guard row, found {len(rows)}"
-            )
-        return guard_from_row(rows[0])
+        if not rows:
+            raise GuardInvariantError(f"output group {output_group!r} has no guard row")
+        guards = [guard_from_row(row) for row in rows]
+        first = guards[0]
+        for other in guards[1:]:
+            if other != first:
+                raise GuardInvariantError(
+                    f"output group {output_group!r} has {len(guards)} guard rows that "
+                    f"disagree (frontiers {first.frontier} and {other.frontier}); "
+                    "refusing to pick one"
+                )
+        return first
 
     def provision_guard(self, output_group: str, generation: str, *, epoch: int = 1) -> Guard:
-        """Create the guard row for a group if it does not exist yet."""
+        """Create the guard row for a group if it does not exist yet.
+
+        See :meth:`read_guard` for why the row can end up duplicated, and why the
+        tidy-up below is best effort rather than required: it only removes a row
+        when this writer's own row is present, because deleting "everything above
+        my token" after an ``INSERT`` that was a no-op would remove the only row
+        and leave the group with none.
+        """
         guard = Guard.initial(output_group, generation, epoch=epoch)
         self.connection.execute(
             f"INSERT INTO {self.qualified(self.guard_table)} "
-            "(output_group, generation, epoch, frontier, batch_id, digest, updated_at) "
-            "SELECT ?, ?, ?, ?, ?, ?, now() WHERE NOT EXISTS ("
+            "(output_group, generation, epoch, frontier, batch_id, digest, updated_at, token) "
+            "SELECT ?, ?, ?, ?, ?, ?, now(), ? WHERE NOT EXISTS ("
             f"  SELECT 1 FROM {self.qualified(self.guard_table)} WHERE output_group = ?)",
             [
                 guard.output_group,
@@ -314,9 +362,21 @@ class DuckLake:
                 guard.frontier,
                 guard.batch_id,
                 guard.digest,
+                self.token,
                 output_group,
             ],
         )
+        mine = self.connection.execute(
+            f"SELECT count(*) FROM {self.qualified(self.guard_table)} "
+            "WHERE output_group = ? AND token = ?",
+            [output_group, self.token],
+        ).fetchone()[0]
+        if mine:
+            self.connection.execute(
+                f"DELETE FROM {self.qualified(self.guard_table)} "
+                "WHERE output_group = ? AND coalesce(token, '') > ?",
+                [output_group, self.token],
+            )
         return self.read_guard(output_group)
 
     def take_over(self, output_group: str, epoch: int) -> Guard:
@@ -408,7 +468,7 @@ class DuckLake:
                 if decision is not Decision.APPLY:
                     cur.execute("ROLLBACK")
                     return PublicationResult(decision, guard, attempt, conflict)
-                self._update_guard(cur, guard, batch)
+                self._update_guard(cur, guard, batch, _nonce())
                 self._apply_payload(cur, batch, resync_tables)
                 cur.execute("COMMIT")
                 return PublicationResult(Decision.APPLY, advance(guard, batch), attempt, conflict)
@@ -426,22 +486,47 @@ class DuckLake:
         with contextlib.suppress(duckdb.Error):
             cur.execute("ROLLBACK")
 
-    def _update_guard(self, cur: duckdb.DuckDBPyConnection, guard: Guard, batch: Batch) -> None:
-        """Conditional guarded update; writes nothing if another writer won."""
+    def _update_guard(
+        self, cur: duckdb.DuckDBPyConnection, guard: Guard, batch: Batch, nonce: str
+    ) -> None:
+        """Conditional guarded update; writes nothing if another writer won.
+
+        ``nonce`` is fresh per attempt, not a writer identity: the check below has
+        to tell "my ``UPDATE`` wrote this row" from "another write left the values I
+        meant to write", and a retry after a lost acknowledgement is the same
+        writer. Without it a conditional ``UPDATE`` that matched no row still
+        looked like a success — a publisher that committed the same batch first
+        leaves exactly the frontier and batch id this statement would have written,
+        so the post-check passed while the payload had been applied twice.
+        """
         cur.execute(
             f"UPDATE {self.qualified(self.guard_table)} "
-            "SET frontier = ?, batch_id = ?, digest = ?, updated_at = now() "
+            "SET frontier = ?, batch_id = ?, digest = ?, token = ?, updated_at = now() "
             "WHERE output_group = ? AND generation = ? AND epoch = ? AND frontier = ?",
             [
                 batch.end,
                 batch.batch_id,
                 batch.digest,
+                nonce,
                 guard.output_group,
                 guard.generation,
                 guard.epoch,
                 guard.frontier,
             ],
         )
+        tokens = [
+            row[0] or ""
+            for row in cur.execute(
+                f"SELECT coalesce(token, '') FROM {self.qualified(self.guard_table)} "
+                "WHERE output_group = ?",
+                [guard.output_group],
+            ).fetchall()
+        ]
+        if not tokens or any(token != nonce for token in tokens):
+            raise ProtocolError(
+                f"guard for {guard.output_group!r} did not advance to {batch.end}; "
+                "a concurrent publisher changed it"
+            )
         current = self.read_guard(guard.output_group, cur=cur)
         if current.frontier != batch.end or current.batch_id != batch.batch_id:
             raise ProtocolError(
@@ -509,6 +594,12 @@ class DuckLake:
             "  frontier BIGINT NOT NULL,"
             "  batch_id VARCHAR,"
             "  digest VARCHAR,"
-            "  updated_at TIMESTAMP"
+            "  updated_at TIMESTAMP,"
+            "  token VARCHAR"
             ")"
+        )
+        # `IF NOT EXISTS` does nothing when the table is already there, including
+        # one created before the token column existed; adding it is idempotent.
+        self.connection.execute(
+            f"ALTER TABLE {self.qualified(self.guard_table)} ADD COLUMN IF NOT EXISTS token VARCHAR"
         )

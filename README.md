@@ -249,6 +249,12 @@ Traps that cost real time and look like code failures:
   A leaked cache reached 33 GB in one session.
 - **A compile failure against a trivial program is never your SQL.** Reproduce it
   with a minimal pipeline before suspecting the connectors.
+- **The cache refills fast enough that clearing it is a per-run cost.** Measured:
+  a full `pytest tests` took a cleared container from 29 GB to 49 GB used (a
+  15 GB cache), against a 58 GB volume — so the *next* full run can hit 100%
+  again and fail `test_end_to_end` with `StartFailedDueToFailedCompilation`
+  while the same module passes 6/6 when run alone. Check `docker exec feldera
+  df -h /` before reading anything into an e2e compile error.
 - **Cleanup is best-effort.** Community edition returns `501 EnterpriseFeature`
   for a graceful stop (`FelderaClient.delete` force-stops first for this reason),
   and refuses to delete a pipeline that is not fully stopped (`400
