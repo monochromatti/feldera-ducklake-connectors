@@ -1429,14 +1429,33 @@ the commissioning doc's "Known limits"):
   the connectors), and its at-least-once reasoning only holds for replays at or above the
   frontier.
 
-### 18.1 The interop claim, narrowed
+### 18.1 The interop claim, narrowed — **resolved by experiment**
 
 `protocol.rs` claimed the vocabulary is shared "so that a catalog written by one is read by the
-other", and that the frontier is a DBSP transaction id stable across restarts. The second half is
+other", and that the frontier is a DBSP transaction id stable across restarts. The second half was
 an assumption about which counter the engine passes to an output endpoint, and the first depends
 on it: if they differ, the guard classifies every step of an inherited catalog as stale and holds.
-`76eb97d` states this as an open question and keeps the identity check, which is what still
+`76eb97d` stated this as an open question and kept the identity check, which is what still
 recognises a replay if the counters do not line up.
+
+**Measured (`73cb2a8`).** `ducklake_output_continues_from_its_frontier_after_a_restart` runs a
+writer against a file catalog, publishes a step, checkpoints, stops, restarts over the same storage
+and appends rows to the input. The step after the restart is numbered above the frontier the guard
+row already held, so `decide` answers `Apply` and the rows land; the run ends with four rows and a
+frontier strictly greater than the one before the restart. The step counter is therefore continuous
+across a restart, and the assumption the protocol rests on holds.
+
+The case also pinned a subtlety worth knowing when writing such a test: **a restarted pipeline is
+paused**. `engine.controller(...)` restores the circuit, and the replay runs before `start()`, but
+endpoints do not read until `controller.start()` is called — the first run needs no explicit start
+because a non-paused endpoint starts with the controller, while the restarted one does not. Without
+it the only symptom is a pipeline that reports two processed records forever.
+
+What is *not* covered by an engine test, and why: an at-least-once restart that re-delivers a
+**published** step. The file input resumes from the offset in the checkpoint, so rows written after
+it are read again as a new step — the writer then legitimately applies them, and the duplicate of
+the replayed step is invisible from the catalog. That path is covered where the payload is not
+re-read: `ducklake/a-repeated-step-is-not-applied-twice` and `tests_live::publishing_the_same_batch_twice_applies_it_once`.
 
 ### 17.7 What the writer review did **not** cover
 
@@ -1620,5 +1639,15 @@ that is `source/catalog-rewind-is-refused`, and this report was written before i
 **Build environment, recorded because it costs twenty minutes to rediscover:** the workspace needs
 rustc 1.99.0 (`~/.rustup/toolchains/1.99.0-aarch64-apple-darwin/bin`), and `rdkafka-sys` needs a
 `pkg-config` *binary* (none is on the default PATH) plus
-`PKG_CONFIG_PATH=<rdkafka-dev>/lib/pkgconfig:<tree>/build/duckdb-src`. Without the binary the error
-reads "librdkafka 2.12.1 cannot be found on the system", which looks like a library problem.
+`PKG_CONFIG_PATH=<rdkafka.dev>/lib/pkgconfig:<tree>/build/duckdb-src`. Without the binary the error
+reads "librdkafka 2.12.1 cannot be found on the system", which looks like a library problem. The
+store paths are garbage-collected eventually, so re-derive them:
+
+```
+nix-build -E 'with import (builtins.getFlake "github:NixOS/nixpkgs/nixos-unstable") {}; rdkafka' --no-out-link
+nix-build -E 'with import (builtins.getFlake "github:NixOS/nixpkgs/nixos-unstable") {}; rdkafka.dev' --no-out-link
+nix-build -E 'with import (builtins.getFlake "github:NixOS/nixpkgs/nixos-unstable") {}; pkg-config' --no-out-link
+```
+
+and for the DuckLake engine tests, `DUCKLAKE_EXTENSION_DIR=<ducklake-extension-2.0.0>` and
+`DUCKLAKE_DUCKDB_LIB=<libduckdb-2.0.0>/lib/libduckdb.dylib`.
