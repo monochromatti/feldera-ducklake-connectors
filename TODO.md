@@ -1766,3 +1766,25 @@ the module passed 6/6 on its own. Cause: the pipeline-manager's compiler cache
 put the volume at 49 GB used — so a second full run can exhaust it again. Recorded in the README's
 *Operating the local stack* with the numbers, because "compile failed" reads like a code problem.
 
+---
+
+## 21. Session 14 — the parity appendix (day 4)
+
+`docs/design.md` gained a section mapping each protocol requirement to the test that pins it on each
+side, built by auditing test names rather than by re-reading code. Three gaps came out of it, and
+they are the reason the table is worth keeping current:
+
+- **Two requirements are pinned on one side only.** The bootstrap is one query over one snapshot
+  with no cursor (`reader.py`, no Rust analogue — the Rust reader buffers the whole table), and the
+  `apply_epoch` check has no Python scenario. Both are *documented* on both sides, so the gap is in
+  the witnesses, not the behaviour.
+- **One review claim did not survive.** A reviewer reported that the sink endpoint discards an
+  error from `refill`. There is no `refill` in this tree's `OutputEndpoint`
+  (`crates/adapterlib/src/transport.rs:1459`): the methods are `connect`, `max_buffer_size_bytes`,
+  `batch_start`, `push_buffer`, `push_key`, `batch_end`, `steps_processed`, `is_fault_tolerant`,
+  `memory`. Recorded here so the next reader does not re-open it.
+- The table's own legend says what it cannot show: a name is evidence that a requirement is
+  *tested*, not that the test would fail without the code. Where that matters (the guard CAS, the
+  checkpoint parse) the mutation was checked by hand and the result is in §17–§20.
+
+
