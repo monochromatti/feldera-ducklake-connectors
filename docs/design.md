@@ -71,6 +71,70 @@ These are counterexamples to **naive designs**, not reports of product bugs.
 | `offset_without_matching_state_loses_input` | Resume from an offset without the state that offset refers to | Journal and checkpoint are written together and reconciled on `recover()` |
 | `output_only_failure_is_not_source_snapshot_atomicity` | Assume an output failure implies the source did not advance | Publication and the input checkpoint are independent; the input checkpoint follows the engine's acknowledgement only |
 
+## Parity appendix: the same protocol in two languages
+
+There are two implementations of this protocol — `src/fd_connectors/` (Python, the reference)
+and `crates/connectors/src/integrated/ducklake/` in the Feldera fork (Rust). They were written
+against the same model but not against each other, so the risk is not either one being wrong; it
+is the two of them disagreeing in a place where only one has a test.
+
+This table maps each requirement to the test that pins it **on each side**. A `—` is not a gap in
+behaviour, it is a gap in *evidence*; the note says which.
+
+| Requirement | Python scenario | Rust test |
+|---|---|---|
+| The decision is total over every guard/batch pairing | `protocol/decision-is-total` | `protocol::the_decision_is_total` (unit) |
+| A batch on the frontier applies and advances it | `guard/apply-advances-frontier` | `protocol::a_batch_on_top_of_the_frontier_applies`, `protocol::advancing_records_the_identity_and_the_digest`, `tests_live::the_frontier_survives_reopening_the_catalog` |
+| Replaying a committed batch is a no-op | `guard/duplicate-retry-is-a-no-op` | `protocol::replaying_the_committed_batch_is_a_duplicate_not_a_second_apply`, `tests_live::publishing_the_same_batch_twice_applies_it_once` |
+| A publisher behind the frontier is stale | `guard/stale-publisher-is-refused` | `protocol::a_batch_whose_base_is_not_the_frontier_is_stale`, `protocol::an_overtaken_interval_is_stale_even_with_an_older_base` |
+| A foreign generation is refused | `guard/foreign-generation-is-refused` | `protocol::another_generation_is_refused_outright`, `protocol::a_fenced_writer_is_refused_even_with_a_higher_epoch` |
+| Ownership moves only by a strictly greater epoch | `guard/ownership-requires-explicit-takeover` | `protocol::taking_over_requires_a_strictly_greater_epoch` |
+| Same identity with different content stops the writer | `guard/divergent-payload-for-committed-identity-is-detected` | `protocol::the_same_identity_with_different_content_stops_the_writer`, `tests_live::a_divergent_payload_for_a_committed_identity_is_refused` |
+| The digest ignores delta order | `test_the_captured_chunks_round_trip_through_json` (via `payload_digest`) | `protocol::the_digest_ignores_delta_order` |
+| Payload and guard commit atomically, or not at all | `ducklake/payload-and-guard-are-atomic-on-payload-failure` | `tests_live::a_payload_failure_leaves_the_guard_and_the_history_where_they_were` |
+| A reader never sees the payload without the guard | `ducklake/reader-sees-payload-and-guard-together` | — the Rust writer commits in one transaction, so there is no second cursor to check from; the property follows from the single statement pair in `writer.rs::publish` |
+| A rolled-back publication leaves history replayable | `ducklake/rollback-leaves-history-replayable` | — no counterpart: the Rust side has no journal and no replay buffer to leave behind |
+| A resync replaces content and replays as a duplicate | `ducklake/resync-replaces-content-and-is-idempotent` | `tests_live::a_resync_replaces_the_content_and_replays_as_a_duplicate` |
+| A resync clears only its own group | `guard/resync-clears-only-the-tables-it-repopulates` | `tests_live::a_resync_clears_only_its_own_group` |
+| A resync behind the frontier moves the frontier back | — Python applies a resync from an unrelated frontier; that is the `Apply` branch, not a separate rule | `protocol::a_resync_behind_the_frontier_moves_the_frontier_back`, `protocol::a_resync_applies_from_an_unrelated_frontier` |
+| A NULL key part is matched, not skipped | `guard/keyed-replacement-matches-a-null-key` | `tests_live::a_null_key_part_is_matched_not_skipped` |
+| A keyed update leaves the post-image | `ducklake/keyed-update-is-delete-then-insert` | `tests_live::a_keyed_update_leaves_the_post_image` |
+| A bag delete removes one copy, not all | `ducklake/multiset-delete-removes-one-copy` | `tests_live::a_multiset_delete_removes_one_copy` |
+| Concurrent publishers converge on one outcome | `ducklake/concurrent-publishers-converge-to-one-outcome` | `two_engines_publishing_the_same_step_converge_on_one_outcome`, `tests_live::two_groups_commit_concurrently_into_one_catalog` |
+| The guard write is conditional | `source/guard-update-is-conditional` | — white-box only on the Python side: the scenario calls `_update_guard` with a stale guard. `Catalog::update_guard` is private, and the closest black-box witness is `two_writers_attach_one_fresh_catalog_at_once` |
+| A duplicated guard row is still one guard | `guard/a-duplicated-guard-row-is-still-one-guard` | `tests_live::two_writers_attach_one_fresh_catalog_at_once` |
+| An update that matched no row is refused | `guard/an-update-that-matched-nothing-is-refused` | — same visibility limit; the nonce check is in `Catalog::update_guard` and has no white-box test (TODO §20) |
+| The change interval is not replayed | `source/change-interval-is-not-replayed` | `tests_live::bootstrap_reads_the_table_once_and_records_its_snapshot`, `tests_live::a_new_snapshot_is_replayed_with_its_change_types` |
+| A catalog that goes backwards is refused | `source/catalog-rewind-is-refused` | `tests_live::a_catalog_that_went_backwards_is_refused` |
+| Identity is the interval, not the digest | `source/identity-is-the-interval-not-the-digest` | `protocol::advancing_records_the_identity_and_the_digest` |
+| Append-only receipts do not deduplicate | `report/lost-update-counterexample` | `two_engines_publishing_the_same_step_converge_on_one_outcome` |
+| A checkpoint that does not parse is refused | `journal.Checkpoint.from_json` raises `KeyError`; no scenario pins it | `tests_live::a_checkpoint_that_does_not_parse_is_refused` |
+| The output frontier survives a restart | `tests/test_end_to_end.py::test_input_restart_does_not_replay_consumed_changes` is the *input* side | `test::ducklake_output_continues_from_its_frontier_after_a_restart` — the *output* side has no Python counterpart, because there is no engine behind the Python output connector to restart |
+| One implementation's catalog is readable by the other | — no engine on the Python side | `test::ducklake_to_ducklake_copies_a_table_into_another` |
+
+### Deliberate divergences
+
+- **The journal.** Python keeps one (`journal.py`) because it must name the batch it is about to
+  hand to the engine *before* the engine acknowledges it; the Rust reader takes its state from the
+  engine's checkpoint and needs no second copy. Neither is a port of the other.
+- **Who drives DuckDB.** Python opens the catalog itself (a file or a PostgreSQL database) and
+  installs the DuckLake extension in-process; Rust runs inside the engine's DuckDB session and
+  loads the extension from a configured directory
+  (`tests_live::the_extension_is_loaded_from_the_configured_directory`).
+- **Error surfacing.** Python raises typed exceptions (`ProtocolError`, `GuardInvariantError`,
+  `HistoryExpiredError`); Rust bails with context strings. The *messages* are therefore not
+  shared: a monitoring rule keyed on text works on one side only, and the tests assert the
+  exception type on one side and the message on the other.
+- **Shape of the entry point.** Python's `publish(batch)` is called directly by the scenario
+  harness; Rust's hangs off `batch_start`/`batch_end`. This is why the Python suite can be
+  white-box about `_update_guard` and the Rust one cannot.
+
+### What this appendix does not claim
+
+It is a mapping of intent, not an automated equivalence check: no test asserts that the two
+implementations produce the same guard row for the same input. Where both sides have a test, they
+assert the same property in different words, and the words are what a reader has to compare.
+
 ## Trust boundary
 
 The theorems hold under these premises, all of which come from the world, not
@@ -116,7 +180,7 @@ and `Quot.sound`.
 The bundle's `formal/sql_checks.py` is the **first round**: nine SQL scenarios
 against DuckDB 2.0.0 and DuckLake build `417a9117f5`, recorded in
 `formal/sql-results.json`. `src/fd_connectors/scenarios.py` is the evolved,
-executable descendant of those checks — 21 scenarios, run by `fd-connectors
+executable descendant of those checks — 23 scenarios, run by `fd-connectors
 validate-local`, and the thing CI gates on. When the two disagree, the code and
 the scenarios are what ship; the model is what justifies them, and changing the
 protocol means changing the model too.

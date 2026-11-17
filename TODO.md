@@ -1426,6 +1426,29 @@ the commissioning doc's "Known limits"):
   the connectors), and its at-least-once reasoning only holds for replays at or above the
   frontier.
 
+### 18.0 The table, re-audited — now an appendix in `docs/design.md`
+
+The table above is **historical**: it records what diverged before `d006e71` and is the reason
+those four fixes happened. A second audit against the code as it now stands moved the live version
+into `docs/design.md` ("Parity appendix"), because the useful question is no longer "what diverged"
+but "which requirement is pinned on which side, and where only one side has a witness".
+
+Three rows are gaps worth knowing:
+
+- `source/guard-update-is-conditional` and `guard/an-update-that-matched-nothing-is-refused` are
+  **white-box** on the Python side — the scenarios call `_update_guard` with a stale guard.
+  `Catalog::update_guard` is private, so Rust has no equivalent; the closest black-box witness is
+  `two_writers_attach_one_fresh_catalog_at_once`. Widening visibility for a test was rejected as the
+  worse trade; the appendix says so instead of implying coverage.
+- `ducklake/reader-sees-payload-and-guard-together` has no Rust counterpart because the Rust writer
+  commits payload and guard in one transaction — there is no second cursor that could ever see one
+  without the other. The property follows from the code, not from a test.
+- The *output*-side restart case exists only in Rust (`73cb2a8`), and the *input*-side one only in
+  Python: each side has an engine only where its connector needs one.
+
+The appendix also records four deliberate structural divergences (journal, who drives DuckDB, error
+surfacing, entry-point shape) so a future reader does not mistake them for drift.
+
 ### 18.1 The interop claim, narrowed — **resolved by experiment**
 
 `protocol.rs` claimed the vocabulary is shared "so that a catalog written by one is read by the

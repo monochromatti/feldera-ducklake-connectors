@@ -46,7 +46,7 @@ uv run fd-connectors validate-local
 ```text
 PASS  guard/apply-advances-frontier
 ...
-21/21 scenarios passed
+23/23 scenarios passed
 ```
 
 That is the check to run before and after touching the connectors. To go
@@ -145,7 +145,7 @@ window in between.
 | DuckLake | official extension bundled with that DuckDB build |
 | Postgres | `17` (for production-shaped catalogs; a DuckDB file works too) |
 
-- **21 protocol scenarios** (`validate-local`) against real DuckLake catalogs,
+- **23 protocol scenarios** (`validate-local`) against real DuckLake catalogs,
   each read back through an independent cursor rather than the writing
   connection, so a publisher that forgets the guard update fails: atomic
   visibility, rollback, retry idempotence, fencing, competing publishers, keyed
@@ -201,7 +201,7 @@ window in between.
 | `src/fd_connectors/journal.py` | Durable input journal and checkpoint (fsync'd, atomic rename). |
 | `src/fd_connectors/codec.py` | SQL ↔ JSON codecs with round-trip checks; rejects unsupported column types. |
 | `src/fd_connectors/feldera.py` | Minimal Feldera REST client (pipelines, ingress, egress, completion tokens). |
-| `src/fd_connectors/scenarios.py` | The 18 SQL scenario checks behind `validate-local`. |
+| `src/fd_connectors/scenarios.py` | The 23 protocol scenarios behind `validate-local`. |
 | `src/fd_connectors/cli.py` | `fd-connectors` entry point. |
 | `tests/` | Unit tests for step assembly and the egress wire format, plus end-to-end tests against a live stack. |
 | `formal/` | The vendored Lean 4 development the protocol comes from, checksummed in `formal/MANIFEST.json`. Read `formal/REPORT.md` first. |

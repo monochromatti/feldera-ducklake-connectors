@@ -69,7 +69,7 @@ group, updated in the same transaction as the output it describes.
 ```bash
 devenv shell                 # python 3.13, uv, duckdb CLI, psql, postgres, lean4, docker-client
 uv sync --group dev          # or rely on devenv
-uv run fd-connectors validate-local      # 18 protocol scenarios, no Feldera needed
+uv run fd-connectors validate-local      # 23 protocol scenarios, no Feldera needed
 uv run fd-connectors validate-local --only guard/     # one family
 uv run pytest tests -q                    # unit + wire-format tests
 feldera-up                                # start the pipeline-manager container on :18080
