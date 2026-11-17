@@ -1787,4 +1787,40 @@ they are the reason the table is worth keeping current:
   *tested*, not that the test would fail without the code. Where that matters (the guard CAS, the
   checkpoint parse) the mutation was checked by hand and the result is in §17–§20.
 
+---
+
+## 22. Session 15 — the parity round (day 5)
+
+Both implementations, everything runnable here, on the tree at the end of the week:
+
+| Gate | Result |
+|---|---|
+| `uv run fd-connectors validate-local` | **23/23** scenarios (18 at the start of the week, 21 after session 12, 23 now) |
+| `uv run pytest tests -q` | **25 passed**, including all 6 in `test_end_to_end.py` |
+| `cargo test -p dbsp_connectors --lib ducklake` | **40/40** (plus the live cases when `DUCKLAKE_*` is set) |
+| `cargo test -p static-connectors --test connector_suites ducklake` | **6/6** engine cases |
+| `cargo clippy -p dbsp_connectors --all-targets` | **0 warnings** — one pre-existing "items after a test module" removed (`d753ca9`) |
+| `cargo fmt --check` / `ruff format --check` / `ruff check` | clean |
+
+**§20.1's diagnosis is now measured, not inferred.** Running the identical suite twice:
+
+- first run: `22 passed, 3 errors` — the three e2e cases failed at pipeline compile;
+- second run: `25 passed` — same code, same suite.
+
+The difference was the container's peak disk use: 93% on the passing run versus 100% (75 MB free)
+on the failing one.  The compiler cache a full e2e pass rebuilds is ~8–15 GB on a 58 GB volume, so
+the suite's margin is one cache's worth and the failure surfaces as `RustError` /
+`StartFailedDueToFailedCompilation` in whichever e2e test happens to compile at the wrong moment.
+The README bullet records the numbers; the practical rule is to clear the cache before a full run
+and to never read that error as a code problem.
+
+**What the week covered:** §18.1 restart case (day 1), Stage E's contract half and the §8.1
+provisioning answer (day 2), the guard-row uniqueness finding and its three fixes (§20, day 3), the
+parity appendix (§21, day 4), and this round (day 5).  Nothing in `formal/` was touched; the one
+model consequence the week found — "one guard row" versus "all rows of a group are equal" — is
+recorded in §20 as a deliberate act still available, not taken.
+
+**Open for a future session:** the parity appendix's two one-sided witnesses (the reader's
+no-cursor bootstrap is Python-only; `apply_epoch` has no Python scenario), and the model question
+above.  Everything the brief listed is checked off.
 
